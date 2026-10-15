@@ -5,3 +5,4 @@
 *.pczt
 !tests/fixtures/*.pczt
 /funding
+*.log

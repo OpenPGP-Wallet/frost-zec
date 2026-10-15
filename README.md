@@ -77,9 +77,23 @@ released wallet tooling does not support it yet, so the first spends were
 made on mainnet with small amounts. Mainnet is expected to activate NU7 in
 November 2026.
 
-## Transactions
+## Transactions on mainnet
 
-To be listed once confirmed.
+Three spends from the same FROST group, one for each pair of participants,
+all mined on 2026-10-15. On chain, each one is an ordinary shielded Ironwood
+transaction with one spend authorization signature:
+
+- participants 1 and 3, one process, paying 0.0002 ZEC to an outside address
+  with change back to the group:
+  [1baaefbf…c084](https://mainnet.zcashexplorer.app/transactions/1baaefbff168c0128d8742f5a5b61c7ad52bffaf65b9ee01294624093bd4c084)
+  (block 3,518,638)
+- participants 1 and 2, two devices, the co-signer verifying the PCZT on its
+  own before signing:
+  [28118dd2…b4ec](https://mainnet.zcashexplorer.app/transactions/28118dd2671c5388fe09a6f02dfd0b38046e5482d1c0debddb666638e4d6b4ec)
+  (block 3,518,645)
+- participants 2 and 3, two devices, sending the rest to an outside address:
+  [c3c83adc…8a52](https://mainnet.zcashexplorer.app/transactions/c3c83adc604b213f5b5c376cd44e7cb2a7be782d01704bf6925b0d3664bb8a52)
+  (block 3,518,648)
 
 ## Next steps
 
