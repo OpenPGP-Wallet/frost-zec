@@ -23,8 +23,10 @@ authorize a spend. Nobody ever holds the full spend authorizing key.
    Notes received by these keys keep the quantum recovery path of ZIP 2005,
    as long as `qsk` is kept. (zcash-sign, by design for now, builds its
    viewing key with a constructor that gives that path up.) There are no
-   official `use_qsk` test vectors yet; the shared primitives are tested
-   against the official Orchard vectors and against orchard's own derivation.
+   official `use_qsk` test vectors yet. The derivation matches the eight
+   independent vectors proposed by the Zafe team (frost-tools#610), and the
+   shared primitives are also tested against the official Orchard vectors and
+   against orchard's own derivation.
 3. **Signing** (`src/signing.rs`): re-randomized FROST (ZIP 312). Each spend
    in the PCZT carries its randomizer alpha; two signers produce shares over
    the v6 sighash, and the aggregated signature is checked with orchard's
