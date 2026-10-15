@@ -49,14 +49,24 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
         for (index, action) in bundle.actions().iter().enumerate() {
             let spend = action.spend();
             let output = action.output();
+            // The value commitment ties each claimed value to what the proof
+            // commits to, so the values below cannot be faked.
             action.verify_cv_net().map_err(|e| refuse(&format!("action {index}: value commitment"), &e))?;
-            spend.verify_nullifier(Some(fvk)).map_err(|e| refuse(&format!("action {index}: spent note"), &e))?;
-            spend.verify_rk(Some(fvk)).map_err(|e| refuse(&format!("action {index}: randomized key"), &e))?;
-            output.verify_note_commitment(spend).map_err(|e| refuse(&format!("action {index}: output note"), &e))?;
-
-            // verify_cv_net succeeded, so both values are present.
             let spend_value = spend.value().map(|v| v.inner()).unwrap_or_default();
             let output_value = output.value().map(|v| v.inner()).unwrap_or_default();
+
+            if spend_value == 0 {
+                // A dummy spend: it pads the transaction, belongs to a throwaway
+                // key and was already signed when the PCZT was built. It moves no
+                // value; an unsigned zero-value spend is not expected.
+                if spend.spend_auth_sig().is_none() {
+                    return Err(TxError::Refused(format!("action {index}: unsigned zero-value spend")));
+                }
+            } else {
+                spend.verify_nullifier(Some(fvk)).map_err(|e| refuse(&format!("action {index}: spent note"), &e))?;
+                spend.verify_rk(Some(fvk)).map_err(|e| refuse(&format!("action {index}: randomized key"), &e))?;
+            }
+            output.verify_note_commitment(spend).map_err(|e| refuse(&format!("action {index}: output note"), &e))?;
             spent += spend_value;
             if spend_value > 0 {
                 lines.push(format!("spend {} from this group", zec(spend_value)));
