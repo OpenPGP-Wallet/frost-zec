@@ -4,3 +4,4 @@
 /wallet
 *.pczt
 !tests/fixtures/*.pczt
+/funding
