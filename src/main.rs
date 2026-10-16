@@ -12,8 +12,9 @@
 //!   info                                      the group's unified viewing key and address
 //!   sign --pczt IN --out OUT [--signers 1,3]  check and sign a proven PCZT in one process
 //!   coordinate [--as 1] [--cosigner 2] --pczt IN --out OUT
-//!                                             device 1: run the signing session
+//!                                             device 1: check the PCZT, then run the signing session
 //!   cosign [--as 2] [--yes]                   device 2: verify the PCZT on its own, then co-sign
+//!                                             (--yes skips the human check: tests only)
 //!
 //! Run `coordinate` and `cosign` in two terminals: they talk through files in
 //! session/, which stand in for the encrypted QR codes of the real app.
@@ -165,8 +166,9 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Device 1: collects the co-signer's commitments, sends the proven PCZT,
-/// then aggregates both shares for each spend and inserts the signatures.
+/// Device 1: checks the proven PCZT itself, collects the co-signer's
+/// commitments, sends the PCZT, then aggregates both shares for each spend and
+/// inserts the signatures.
 fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
     let me = number(args, "--as")?.unwrap_or(1u16);
     let cosigner = number(args, "--cosigner")?.unwrap_or(2u16);
@@ -177,6 +179,11 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
     let output = option(args, "--out").ok_or("--out OUT is required")?;
     let pczt_bytes = fs::read(input)?;
     let pczt = pczt_io::parse(&pczt_bytes)?;
+    // The coordinator checks the PCZT too: whatever built it (the wallet, a
+    // dApp) is not trusted to have built what the user asked for.
+    let group = store::load_group()?;
+    let report = check::analyze(&pczt, &group_fvk(&group)?, network_type(&group.network)?)?;
+    print_report(&format!("device {me}"), &report);
     let sighash = pczt_io::sighash(&pczt)?;
     let spends = pczt_io::spends_to_sign(&pczt)?;
     if spends.len() > MAX_SPENDS {
@@ -187,6 +194,9 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
     let (my_id, their_id) = (Identifier::try_from(me)?, Identifier::try_from(cosigner)?);
 
     session::reset()?;
+    // The session files hold the PCZT (amounts, addresses, viewing-key
+    // material): they are removed when this function returns, whatever happens.
+    let _cleanup = session::Cleanup;
     let session_id = hex::encode(rand::random::<[u8; 8]>());
     session::send("start", &session::Start { session: session_id.clone(), coordinator: me, cosigner })?;
     println!("[device {me}] signing session open. Run `cosign --as {cosigner}` in another terminal.");
@@ -296,6 +306,8 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     print_report(&format!("device {me}"), &report);
 
     let approved = if flag(args, "--yes") {
+        // Test mode: skips the human check. Never use it for real funds.
+        println!("[device {me}] --yes: approving without a human check (test mode)");
         report.warnings.is_empty()
     } else {
         print!("[device {me}] approve and sign? [y/N] ");

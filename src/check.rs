@@ -22,6 +22,9 @@ use crate::pczt_io::TxError;
 /// 0.0003 ZEC for a few actions).
 const HIGH_FEE: u64 = 100_000;
 
+/// The total supply of ZEC in zatoshis: no honest amount can be larger.
+const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
+
 pub struct Report {
     pub lines: Vec<String>,
     pub warnings: Vec<String>,
@@ -29,6 +32,16 @@ pub struct Report {
 
 pub fn zec(zatoshis: u64) -> String {
     format!("{}.{:08} ZEC", zatoshis / 100_000_000, zatoshis % 100_000_000)
+}
+
+/// Adds an amount read from the PCZT to a running total. The amounts come
+/// from the coordinator, so they are bounded instead of trusted not to overflow.
+fn add(total: &mut u64, value: u64) -> Result<(), TxError> {
+    *total = total
+        .checked_add(value)
+        .filter(|sum| *sum <= MAX_MONEY)
+        .ok_or_else(|| TxError::Refused("amounts larger than the total ZEC supply".into()))?;
+    Ok(())
 }
 
 /// Verifies and describes a PCZT that spends from the group `fvk`.
@@ -67,7 +80,7 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
                 spend.verify_rk(Some(fvk)).map_err(|e| refuse(&format!("action {index}: randomized key"), &e))?;
             }
             output.verify_note_commitment(spend).map_err(|e| refuse(&format!("action {index}: output note"), &e))?;
-            spent += spend_value;
+            add(&mut spent, spend_value)?;
             if spend_value > 0 {
                 lines.push(format!("spend {} from this group", zec(spend_value)));
             }
@@ -75,15 +88,15 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
                 let recipient = output.recipient().ok_or_else(|| TxError::Refused(format!("action {index}: output without recipient")))?;
                 match fvk.scope_for_address(&recipient) {
                     Some(Scope::Internal) => {
-                        change += output_value;
+                        add(&mut change, output_value)?;
                         lines.push(format!("change {} back to this group", zec(output_value)));
                     }
                     Some(Scope::External) => {
-                        change += output_value;
+                        add(&mut change, output_value)?;
                         lines.push(format!("send {} to this group's own address", zec(output_value)));
                     }
                     None => {
-                        paid += output_value;
+                        add(&mut paid, output_value)?;
                         let address = keys::encode_address(&recipient, network).map_err(|e| TxError::Refused(e.to_string()))?;
                         lines.push(format!("PAY {} to {address}", zec(output_value)));
                     }
@@ -93,8 +106,10 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
         Ok(())
     })?;
 
+    let mut outputs = paid;
+    add(&mut outputs, change)?;
     let fee = spent
-        .checked_sub(paid + change)
+        .checked_sub(outputs)
         .ok_or("the outputs are worth more than the spent notes")?;
     lines.push(format!("fee {}", zec(fee)));
     if fee > HIGH_FEE {
@@ -104,4 +119,19 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
         return Err("the transaction spends nothing from this group".into());
     }
     Ok(Report { lines, warnings })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn totals_are_bounded_by_the_supply() {
+        let mut total = MAX_MONEY - 1;
+        assert!(add(&mut total, 1).is_ok());
+        assert!(add(&mut total, 1).is_err());
+        assert_eq!(total, MAX_MONEY, "a refused amount leaves the total unchanged");
+        let mut total = 1;
+        assert!(add(&mut total, u64::MAX).is_err());
+    }
 }

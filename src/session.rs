@@ -54,6 +54,16 @@ fn path(name: &str) -> PathBuf {
     Path::new(DIR).join(format!("{name}.json"))
 }
 
+/// Removes the session files when dropped, so a finished or failed session
+/// leaves nothing on disk.
+pub struct Cleanup;
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(DIR);
+    }
+}
+
 /// Starts a fresh session: old messages are removed.
 pub fn reset() -> Result<(), Box<dyn Error>> {
     if Path::new(DIR).exists() {

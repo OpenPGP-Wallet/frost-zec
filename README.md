@@ -72,6 +72,11 @@ cargo run -- coordinate --as 1 --cosigner 2 --pczt proven.pczt --out signed.pczt
 cargo run -- cosign --as 2     # shows what it is about to sign and asks for approval
 ```
 
+Both devices run the same PCZT checks: the coordinator does not trust
+whatever built the transaction either. The session files are removed when
+the session ends. `cosign --yes` skips the human approval and exists only for
+automated tests.
+
 ## Testnet and NU7
 
 Public testnet activated NU7 at height 4,465,026 (Zebra 7.0.0-rc.0), and the
