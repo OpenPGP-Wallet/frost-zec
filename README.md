@@ -38,7 +38,12 @@ authorize a spend. Nobody ever holds the full spend authorizing key.
    note's nullifier, the randomized key and the output note commitment
    (orchard's PCZT verifiers), then lists payments, change and fee. It signs
    the sighash it computed itself, so a lying coordinator cannot get a
-   signature for a different transaction.
+   signature for a different transaction. It refuses a PCZT that still holds
+   a dummy spending key (ZIP 374), or a witness that does not lead to the
+   anchor. And since a v6 signature does not commit to the anchor, it warns
+   that signing does not prove the spent notes exist: the signature
+   authorizes these exact payments until the expiry height, and a
+   transaction that never expires is refused.
 
 [zcash-devtool](https://github.com/zcash/zcash-devtool) does the wallet side:
 it watches the group's viewing key, builds and proves the PCZT, and
