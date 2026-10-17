@@ -58,7 +58,9 @@ Selected by the version byte, never the baseline:
   `ak`, or another app would rebuild a wrong share.
 - **Birthday height.** Zkool restores with a birthday at Orchard activation (block 1,687,104), which
   means scanning millions of blocks. An optional 4-byte birthday height would make a restore much
-  faster.
+  faster. Even without it, a group whose keys follow ZIP 2005 (Zkool's dkg-2, from zkool2#1337) was
+  created after NU6.3, so its restore can start at Ironwood activation (block 3,428,143), about 1.7
+  million blocks later.
 - **Test vectors** for every version, encode and decode.
 
 ## Out of scope
