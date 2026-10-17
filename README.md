@@ -112,7 +112,8 @@ transaction with one spend authorization signature:
 - Keep `qsk` split 2-of-3 across the devices instead of keeping `sk`, so that
   no single device can spend through the future recovery protocol.
 - Encrypted QR codes instead of files.
-- Interoperability with other FROST wallets (common message and backup format).
+- Interoperability with other FROST wallets (common message and backup format). Backup format
+  draft: [docs/backup-format.md](docs/backup-format.md).
 
 ## License
 
