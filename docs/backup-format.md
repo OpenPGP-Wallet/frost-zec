@@ -66,6 +66,9 @@ Selected by the version byte, never the baseline:
 ## Out of scope
 
 How `sk` is agreed, the DKG, and the signing transport. One note on transport: in Zkool's memo
-transport a t=3 signing package already takes 507 of the 512 memo bytes and t=4 takes 608, so a 4-of-n
-group can't sign (noted in zkool2#1337). Signing messages should stay independent of the transport
-(QR codes or files have no such limit).
+transport a t=3 signing package already takes 506 of the 512 memo bytes and t=4 takes 607, so a 4-of-n
+group can't sign (zkool2#1339). Signing messages should stay independent of the transport (QR codes or
+files have no such limit).
+
+Related: zkool2#1338 reduces a Zkool member's stored state to the `zkfrost` payload plus `ak`, the DKG
+version and a mailbox seed, which matches the content above.
