@@ -61,6 +61,10 @@ Selected by the version byte, never the baseline:
   faster. Even without it, a group whose keys follow ZIP 2005 (Zkool's dkg-2, from zkool2#1337) was
   created after NU6.3, so its restore can start at Ironwood activation (block 3,428,143), about 1.7
   million blocks later.
+- **Derivation profile.** Version 1 assumes ZIP 2005 (`use_qsk`). The group descriptor should record
+  the derivation profile as an explicit identifier instead, so the same envelope stays valid if
+  another derivation scheme appears later (raised by benjoshyo on the forum thread). This is separate
+  from how `sk` is agreed, which the format still leaves open.
 - **Test vectors** for every version, encode and decode.
 
 ## Out of scope
