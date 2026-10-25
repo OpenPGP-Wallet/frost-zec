@@ -10,9 +10,7 @@ use ff::PrimeField;
 use orchard::primitives::redpallas::{self, SpendAuth};
 use pczt::roles::low_level_signer::{OrchardParseError, Signer};
 use pczt::Pczt;
-use zcash_primitives::transaction::sighash::SignableInput;
-use zcash_primitives::transaction::sighash_v6::v6_signature_hash;
-use zcash_primitives::transaction::txid::TxIdDigester;
+use zcash_primitives::transaction::sighash::{PrecomputedSighashData, SignableInput};
 use zcash_primitives::transaction::TxVersion;
 
 /// Errors raised inside the low-level signer callbacks.
@@ -66,9 +64,8 @@ pub fn sighash(pczt: &Pczt) -> Result<[u8; 32], Box<dyn Error>> {
     if tx_data.version() != TxVersion::V6 {
         return Err("only v6 (NU6.3, Ironwood) transactions are supported".into());
     }
-    let digests = tx_data.digest(TxIdDigester);
-    let hash = v6_signature_hash(&tx_data, &SignableInput::Shielded, &digests);
-    Ok(hash.as_ref().try_into()?)
+    let precomputed = PrecomputedSighashData::new_zip244(tx_data).map_err(|_| "cannot compute the sighash of this transaction")?;
+    Ok(*precomputed.signature_hash(&SignableInput::Shielded).as_ref())
 }
 
 /// The Ironwood spends that still need a signature. Spends in the sealed

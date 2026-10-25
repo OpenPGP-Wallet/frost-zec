@@ -88,7 +88,7 @@ pub fn derive(sk: &[u8; 32], ak: &[u8; 32]) -> Result<GroupKeys, Box<dyn Error>>
 /// The unified full viewing key, with its Orchard component only (Ironwood
 /// uses the same Orchard-protocol keys).
 pub fn ufvk(fvk: &FullViewingKey, network: NetworkType) -> Result<String, Box<dyn Error>> {
-    let ufvk = unified::Ufvk::try_from_items(vec![unified::Fvk::Orchard(fvk.to_bytes())])?;
+    let ufvk = unified::Ufvk::try_from_items(unified::Revision::R0, vec![unified::Uitem::Data(unified::Fvk::Orchard(fvk.to_bytes()))])?;
     Ok(ufvk.encode(&network))
 }
 
@@ -98,7 +98,7 @@ pub fn address(fvk: &FullViewingKey, network: NetworkType) -> Result<String, Box
 }
 
 pub fn encode_address(address: &orchard::Address, network: NetworkType) -> Result<String, Box<dyn Error>> {
-    let ua = unified::Address::try_from_items(vec![unified::Receiver::Orchard(address.to_raw_address_bytes())])?;
+    let ua = unified::Address::try_from_items(unified::Revision::R0, vec![unified::Uitem::Data(unified::Receiver::Orchard(address.to_raw_address_bytes()))])?;
     Ok(ua.encode(&network))
 }
 

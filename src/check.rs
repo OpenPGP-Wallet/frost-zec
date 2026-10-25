@@ -221,7 +221,7 @@ mod tests {
         let recipient = FullViewingKey::from(&sk).address_at(0u32, Scope::External);
         let mut builder = Builder::new(BundleType::DEFAULT, BundleVersion::ironwood_v3(), Flags::ENABLED, Anchor::empty_tree()).unwrap();
         builder.add_output(None, recipient, NoteValue::from_raw(10_000), [0; 512]).unwrap();
-        let (bundle, _) = builder.build_for_pczt(rand::rngs::OsRng).unwrap();
+        let (bundle, _) = builder.build_for_pczt(rand10::rand_core::UnwrapErr(rand10::rngs::SysRng)).unwrap();
 
         let refused: Vec<_> = bundle
             .actions()
@@ -260,7 +260,7 @@ mod tests {
         let mut builder = Builder::new(BundleType::DEFAULT, BundleVersion::ironwood_v3(), Flags::ENABLED, anchor).unwrap();
         builder.add_spend(fvk, note, path).unwrap();
         builder.add_output(None, recipient, NoteValue::from_raw(40_000), [0; 512]).unwrap();
-        let (bundle, _) = builder.build_for_pczt(rand::rngs::OsRng).unwrap();
+        let (bundle, _) = builder.build_for_pczt(rand10::rand_core::UnwrapErr(rand10::rngs::SysRng)).unwrap();
         let (index, action) = bundle
             .actions()
             .iter()
