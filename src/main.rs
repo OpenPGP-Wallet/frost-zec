@@ -9,18 +9,27 @@
 //! Commands:
 //!   selftest                                  in-memory DKG + signatures with every pair, no network
 //!   keygen [--network main|test] [--force]    run the DKG and save the shares in data/
-//!   info                                      the group's unified viewing key and address
+//!   info [--vault DIR]                        the group's unified viewing key and address
+//!   inspect --pczt IN [--vault DIR]           check a PCZT and show what it does, without signing
 //!   sign --pczt IN --out OUT [--signers 1,3]  check and sign a proven PCZT in one process
-//!   coordinate [--as 1] [--cosigner 2] --pczt IN --out OUT
-//!                                             device 1: check the PCZT, then run the signing session
-//!   cosign [--as 2] [--yes]                   device 2: verify the PCZT on its own, then co-sign
+//!   coordinate [--as 1 | --vault DIR] [--dir session] --pczt IN --out OUT
+//!                                             check the PCZT, then run the signing session
+//!   cosign [--as 2 | --vault DIR] [--dir session] [--yes]
+//!                                             verify the PCZT on its own, then co-sign
 //!                                             (--yes skips the human check: tests only)
+//!   interop dkg [--network main|test] [--vault-id HEX] [--threshold 2] [--members 2]
+//!               [--dir exchange] [--out vault] [--force]
+//!                                             create a vault with members running other
+//!                                             software, in Zafe's key profile (docs/interop.md)
 //!
 //! Run `coordinate` and `cosign` in two terminals: they talk through files in
-//! session/, which stand in for the encrypted QR codes of the real app.
+//! the --dir directory, which stand in for the encrypted QR codes of the real
+//! app. `--as N` uses participant N of the group in data/; `--vault DIR` uses a
+//! seat created with `interop dkg`.
 
 mod check;
 mod dkg;
+mod interop;
 mod keys;
 mod pczt_io;
 mod session;
@@ -31,10 +40,12 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use orchard::keys::FullViewingKey;
 use reddsa::frost::redpallas as frost;
+use frost::keys::{KeyPackage, PublicKeyPackage};
 use frost::round1::SigningCommitments;
 use frost::round2::SignatureShare;
 use frost::Identifier;
@@ -44,6 +55,7 @@ const MAX_SIGNERS: u16 = 3;
 const MIN_SIGNERS: u16 = 2;
 /// How many spends one co-signing session can cover (one nonce pair each).
 const MAX_SPENDS: usize = 4;
+const SESSION_DIR: &str = "session";
 
 fn main() {
     if let Err(error) = run(std::env::args().skip(1).collect()) {
@@ -56,12 +68,14 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     match args.first().map(String::as_str) {
         Some("selftest") => selftest(),
         Some("keygen") => keygen(&args[1..]),
-        Some("info") => info(),
+        Some("info") => info(&args[1..]),
+        Some("inspect") => inspect(&args[1..]),
         Some("sign") => sign(&args[1..]),
         Some("coordinate") => coordinate(&args[1..]),
         Some("cosign") => cosign(&args[1..]),
+        Some("interop") if args.get(1).map(String::as_str) == Some("dkg") => interop_dkg(&args[2..]),
         _ => {
-            eprintln!("usage: frost-zec <selftest | keygen | info | sign | coordinate | cosign> [options]\nsee the comment at the top of src/main.rs for the options");
+            eprintln!("usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg> [options]\nsee the comment at the top of src/main.rs for the options");
             Ok(())
         }
     }
@@ -99,7 +113,7 @@ fn keygen(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Err("keys already exist in data/ (they may hold funds); use --force to replace them".into());
     }
     let network_name = option(args, "--network").unwrap_or("test");
-    let network = network_type(network_name)?;
+    let network = interop::network_type(network_name)?;
 
     let (key_packages, public_key_package) = dkg::run(MAX_SIGNERS, MIN_SIGNERS)?;
     let ak = signing::group_ak(&public_key_package)?;
@@ -121,8 +135,11 @@ fn keygen(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn info() -> Result<(), Box<dyn Error>> {
-    print_group(&store::load_group()?);
+fn info(args: &[String]) -> Result<(), Box<dyn Error>> {
+    match option(args, "--vault") {
+        Some(dir) => interop::print_vault(&interop::Vault::load(Path::new(dir))?),
+        None => print_group(&store::load_group()?),
+    }
     Ok(())
 }
 
@@ -141,6 +158,81 @@ fn group_fvk(group: &store::Group) -> Result<FullViewingKey, Box<dyn Error>> {
     Ok(keys::derive(&sk, &ak)?.fvk)
 }
 
+/// What one participant brings to a signing session.
+struct Seat {
+    name: String,
+    key_package: KeyPackage,
+    public_key_package: PublicKeyPackage,
+    fvk: FullViewingKey,
+    network: NetworkType,
+}
+
+impl Seat {
+    /// The seat from `--vault DIR`, or participant `--as N` of the group in data/.
+    fn load(args: &[String], default_index: u16) -> Result<Seat, Box<dyn Error>> {
+        if let Some(dir) = option(args, "--vault") {
+            let vault = interop::Vault::load(Path::new(dir))?;
+            let key_package = vault.key_package()?;
+            return Ok(Seat {
+                name: format!("member {}", interop::short(key_package.identifier())),
+                key_package,
+                public_key_package: vault.public_key_package()?,
+                fvk: vault.fvk()?,
+                network: interop::network_type(&vault.network)?,
+            });
+        }
+        let index = number(args, "--as")?.unwrap_or(default_index);
+        let group = store::load_group()?;
+        Ok(Seat {
+            name: format!("device {index}"),
+            key_package: single_key(index)?,
+            public_key_package: store::load_public()?,
+            fvk: group_fvk(&group)?,
+            network: interop::network_type(&group.network)?,
+        })
+    }
+
+    fn id(&self) -> Identifier {
+        *self.key_package.identifier()
+    }
+
+    /// Sessions have exactly two signers: the coordinator and one co-signer.
+    fn check_two_signers(&self) -> Result<(), Box<dyn Error>> {
+        if *self.key_package.min_signers() != 2 {
+            return Err("signing sessions support a threshold of 2 only".into());
+        }
+        Ok(())
+    }
+
+    /// The other participant named in a message: another member of this group.
+    fn other_member(&self, hex_id: &str) -> Result<Identifier, Box<dyn Error>> {
+        let id = Identifier::deserialize(&hex::decode(hex_id)?)?;
+        if id == self.id() || !self.public_key_package.verifying_shares().contains_key(&id) {
+            return Err(format!("{hex_id} is not another member of this group").into());
+        }
+        Ok(id)
+    }
+}
+
+fn check_kind(format: &str, kind: &str, expected: &str) -> Result<(), Box<dyn Error>> {
+    if format != interop::FORMAT || kind != expected {
+        return Err(format!("expected a `{expected}` message ({}), got `{kind}` ({format})", interop::FORMAT).into());
+    }
+    Ok(())
+}
+
+/// Checks a PCZT and shows what it does, without signing anything.
+fn inspect(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let input = option(args, "--pczt").ok_or("--pczt IN is required")?;
+    let seat = Seat::load(args, 1)?;
+    let pczt = pczt_io::parse(&fs::read(input)?)?;
+    let report = check::analyze(&pczt, &seat.fvk, seat.network)?;
+    print_report("this group", &report);
+    println!("  sighash {}", hex::encode(pczt_io::sighash(&pczt)?));
+    println!("  {} spend(s) waiting for a signature", pczt_io::spends_to_sign(&pczt)?.len());
+    Ok(())
+}
+
 /// Checks and signs a proven PCZT in one process with the chosen pair.
 fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let input = option(args, "--pczt").ok_or("--pczt IN is required")?;
@@ -151,7 +243,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let public_key_package = store::load_public()?;
 
     let pczt = pczt_io::parse(&fs::read(input)?)?;
-    let report = check::analyze(&pczt, &fvk, network_type(&group.network)?)?;
+    let report = check::analyze(&pczt, &fvk, interop::network_type(&group.network)?)?;
     print_report("this device", &report);
     let sighash = pczt_io::sighash(&pczt)?;
     let spends = pczt_io::spends_to_sign(&pczt)?;
@@ -166,45 +258,35 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Device 1: checks the proven PCZT itself, collects the co-signer's
+/// The coordinator: checks the PCZT itself, takes the co-signer's
 /// commitments, sends the PCZT, then aggregates both shares for each spend and
 /// inserts the signatures.
 fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let me = number(args, "--as")?.unwrap_or(1u16);
-    let cosigner = number(args, "--cosigner")?.unwrap_or(2u16);
-    if me == cosigner {
-        return Err("the coordinator and the co-signer must be different participants".into());
-    }
+    let seat = Seat::load(args, 1)?;
+    seat.check_two_signers()?;
+    let dir = PathBuf::from(option(args, "--dir").unwrap_or(SESSION_DIR));
     let input = option(args, "--pczt").ok_or("--pczt IN is required")?;
     let output = option(args, "--out").ok_or("--out OUT is required")?;
     let pczt_bytes = fs::read(input)?;
     let pczt = pczt_io::parse(&pczt_bytes)?;
     // The coordinator checks the PCZT too: whatever built it (the wallet, a
     // dApp) is not trusted to have built what the user asked for.
-    let group = store::load_group()?;
-    let report = check::analyze(&pczt, &group_fvk(&group)?, network_type(&group.network)?)?;
-    print_report(&format!("device {me}"), &report);
+    let report = check::analyze(&pczt, &seat.fvk, seat.network)?;
+    print_report(&seat.name, &report);
     let sighash = pczt_io::sighash(&pczt)?;
     let spends = pczt_io::spends_to_sign(&pczt)?;
     if spends.len() > MAX_SPENDS {
         return Err(format!("{} spends; one session covers at most {MAX_SPENDS}", spends.len()).into());
     }
-    let public_key_package = store::load_public()?;
-    let key_package = single_key(me)?;
-    let (my_id, their_id) = (Identifier::try_from(me)?, Identifier::try_from(cosigner)?);
+    let my_id = seat.id();
 
-    session::reset()?;
     // The session files hold the PCZT (amounts, addresses, viewing-key
     // material): they are removed when this function returns, whatever happens.
-    let _cleanup = session::Cleanup;
-    let session_id = hex::encode(rand::random::<[u8; 8]>());
-    session::send("start", &session::Start { session: session_id.clone(), coordinator: me, cosigner })?;
-    println!("[device {me}] signing session open. Run `cosign --as {cosigner}` in another terminal.");
-
-    let theirs: session::Commitments = session::receive("commitments")?;
-    if theirs.session != session_id {
-        return Err("commitments from another session".into());
-    }
+    let _cleanup = session::Cleanup(&dir);
+    println!("[{}] waiting for the co-signer's commitments in {}...", seat.name, session::path(&dir, session::COMMITMENTS).display());
+    let theirs: session::Commitments = session::receive(&dir, session::COMMITMENTS)?;
+    check_kind(&theirs.format, &theirs.kind, "sign-commitments")?;
+    let their_id = seat.other_member(&theirs.identifier)?;
     if theirs.commitments.len() < spends.len() {
         return Err("not enough commitments from the co-signer".into());
     }
@@ -213,21 +295,33 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut packages = Vec::new();
     let mut my_commitments = Vec::new();
     for (spend, their_commitment) in spends.iter().zip(&theirs.commitments) {
-        let (nonces, my_commitment) = signing::commit(&key_package);
+        let (nonces, my_commitment) = signing::commit(&seat.key_package);
         let commitments = BTreeMap::from([(my_id, my_commitment), (their_id, SigningCommitments::deserialize(&hex::decode(their_commitment)?)?)]);
         my_commitments.push(hex::encode(my_commitment.serialize()?));
         my_nonces.push(nonces);
         packages.push((spend, commitments));
     }
-    session::send("request", &session::Request { session: session_id.clone(), pczt: hex::encode(&pczt_bytes), commitments: my_commitments })?;
-    println!("[device {me}] PCZT sent; waiting for device {cosigner} to check it...");
+    session::send(
+        &dir,
+        session::REQUEST,
+        &session::Request {
+            format: interop::FORMAT.into(),
+            kind: "sign-request".into(),
+            session: theirs.session.clone(),
+            identifier: hex::encode(my_id.serialize()),
+            pczt: hex::encode(&pczt_bytes),
+            commitments: my_commitments,
+        },
+    )?;
+    println!("[{}] request written to {}: send it to the co-signer. Waiting for its reply...", seat.name, session::path(&dir, session::REQUEST).display());
 
-    let reply: session::Reply = session::receive("reply")?;
-    if reply.session != session_id {
-        return Err("reply from another session".into());
+    let reply: session::Reply = session::receive(&dir, session::REPLY)?;
+    check_kind(&reply.format, &reply.kind, "sign-reply")?;
+    if reply.session != theirs.session || seat.other_member(&reply.identifier)? != their_id {
+        return Err("reply from another session or another member".into());
     }
     if let Some(reason) = reply.refused {
-        return Err(format!("device {cosigner} refused to sign: {reason}").into());
+        return Err(format!("the co-signer refused to sign: {reason}").into());
     }
     let their_shares = reply.shares.ok_or("no shares in the reply")?;
     if their_shares.len() != spends.len() {
@@ -236,61 +330,76 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let mut signatures = Vec::new();
     for (((spend, commitments), nonces), their_share) in packages.iter().zip(&my_nonces).zip(&their_shares) {
-        let my_share = signing::share(&sighash, &spend.alpha, commitments, nonces, &key_package)?;
+        let my_share = signing::share(&sighash, &spend.alpha, commitments, nonces, &seat.key_package)?;
         let shares = BTreeMap::from([(my_id, my_share), (their_id, SignatureShare::deserialize(&hex::decode(their_share)?)?)]);
-        signatures.push((spend.index, signing::aggregate(&sighash, &spend.alpha, commitments, &shares, &public_key_package)?));
+        signatures.push((spend.index, signing::aggregate(&sighash, &spend.alpha, commitments, &shares, &seat.public_key_package)?));
     }
     drop(my_nonces);
     let signed = pczt_io::apply(pczt, &sighash, &signatures)?;
     fs::write(output, pczt_io::serialize(signed)?)?;
-    println!("[device {me}] {} spend(s) signed with device {cosigner}; each signature verified under its rk. Written to {output}.", signatures.len());
+    println!("[{}] {} spend(s) signed with member {}; each signature verified under its rk. Written to {output}.", seat.name, signatures.len(), interop::short(&their_id));
     Ok(())
 }
 
-/// Device 2: commits first, then verifies the PCZT on its own and signs the
-/// sighash it computed itself.
+/// The co-signer: commits first, then verifies the PCZT on its own and signs
+/// the sighash it computed itself.
 fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let me = number(args, "--as")?.unwrap_or(2u16);
-    let group = store::load_group()?;
-    let fvk = group_fvk(&group)?;
-    let key_package = single_key(me)?;
-    let my_id = Identifier::try_from(me)?;
+    let seat = Seat::load(args, 2)?;
+    seat.check_two_signers()?;
+    let dir = PathBuf::from(option(args, "--dir").unwrap_or(SESSION_DIR));
+    let my_id = seat.id();
 
-    println!("[device {me}] waiting for a signing request...");
-    let start: session::Start = session::receive("start")?;
-    if start.cosigner != me {
-        return Err(format!("this session expects participant {} as co-signer", start.cosigner).into());
-    }
-    let their_id = Identifier::try_from(start.coordinator)?;
+    session::reset(&dir)?;
+    let session_id = hex::encode(rand::random::<[u8; 8]>());
     let mut my_nonces = Vec::new();
     let mut my_commitments = Vec::new();
     for _ in 0..MAX_SPENDS {
-        let (nonces, commitment) = signing::commit(&key_package);
+        let (nonces, commitment) = signing::commit(&seat.key_package);
         my_nonces.push(nonces);
         my_commitments.push(commitment);
     }
     session::send(
-        "commitments",
+        &dir,
+        session::COMMITMENTS,
         &session::Commitments {
-            session: start.session.clone(),
+            format: interop::FORMAT.into(),
+            kind: "sign-commitments".into(),
+            session: session_id.clone(),
+            identifier: hex::encode(my_id.serialize()),
             commitments: my_commitments.iter().map(|c| c.serialize().map(hex::encode)).collect::<Result<_, _>>()?,
         },
     )?;
+    println!("[{}] commitments written to {}: send them to the coordinator. Waiting for its request...", seat.name, session::path(&dir, session::COMMITMENTS).display());
 
-    let request: session::Request = session::receive("request")?;
-    if request.session != start.session {
+    let request: session::Request = session::receive(&dir, session::REQUEST)?;
+    // The request holds the PCZT: it does not stay on disk once read.
+    let _ = fs::remove_file(session::path(&dir, session::REQUEST));
+    check_kind(&request.format, &request.kind, "sign-request")?;
+    if request.session != session_id {
         return Err("request from another session".into());
     }
+    let their_id = seat.other_member(&request.identifier)?;
     let refuse = |reason: String| -> Result<(), Box<dyn Error>> {
-        session::send("reply", &session::Reply { session: start.session.clone(), shares: None, refused: Some(reason.clone()) })?;
+        session::send(
+            &dir,
+            session::REPLY,
+            &session::Reply {
+                format: interop::FORMAT.into(),
+                kind: "sign-reply".into(),
+                session: session_id.clone(),
+                identifier: hex::encode(my_id.serialize()),
+                shares: None,
+                refused: Some(reason.clone()),
+            },
+        )?;
         Err(format!("refused: {reason}").into())
     };
 
-    let pczt = match pczt_io::parse(&hex::decode(&request.pczt)?) {
+    let pczt = match hex::decode(&request.pczt).map_err(Box::<dyn Error>::from).and_then(|bytes| pczt_io::parse(&bytes)) {
         Ok(pczt) => pczt,
         Err(e) => return refuse(e.to_string()),
     };
-    let report = match check::analyze(&pczt, &fvk, network_type(&group.network)?) {
+    let report = match check::analyze(&pczt, &seat.fvk, seat.network) {
         Ok(report) => report,
         Err(e) => return refuse(e.to_string()),
     };
@@ -303,14 +412,14 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     if spends.len() > MAX_SPENDS || request.commitments.len() != spends.len() {
         return refuse("the number of spends and commitments do not match".into());
     }
-    print_report(&format!("device {me}"), &report);
+    print_report(&seat.name, &report);
 
     let approved = if flag(args, "--yes") {
         // Test mode: skips the human check. Never use it for real funds.
-        println!("[device {me}] --yes: approving without a human check (test mode)");
-        report.warnings.is_empty()
+        println!("[{}] --yes: approving without a human check (test mode)", seat.name);
+        report.warnings.iter().all(|w| w.starts_with("v6 pre-authorization"))
     } else {
-        print!("[device {me}] approve and sign? [y/N] ");
+        print!("[{}] approve and sign? [y/N] ", seat.name);
         io::stdout().flush()?;
         let mut answer = String::new();
         io::stdin().lock().read_line(&mut answer)?;
@@ -323,13 +432,48 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut shares = Vec::new();
     for ((spend, their_commitment), (nonces, my_commitment)) in spends.iter().zip(&request.commitments).zip(my_nonces.iter().zip(&my_commitments)) {
         let commitments = BTreeMap::from([(their_id, SigningCommitments::deserialize(&hex::decode(their_commitment)?)?), (my_id, *my_commitment)]);
-        let share = signing::share(&sighash, &spend.alpha, &commitments, nonces, &key_package)?;
+        let share = signing::share(&sighash, &spend.alpha, &commitments, nonces, &seat.key_package)?;
         shares.push(hex::encode(share.serialize()));
     }
     drop(my_nonces);
-    session::send("reply", &session::Reply { session: start.session, shares: Some(shares), refused: None })?;
-    println!("[device {me}] signed the sighash computed on this device; nonces discarded.");
+    session::send(
+        &dir,
+        session::REPLY,
+        &session::Reply {
+            format: interop::FORMAT.into(),
+            kind: "sign-reply".into(),
+            session: session_id,
+            identifier: hex::encode(my_id.serialize()),
+            shares: Some(shares),
+            refused: None,
+        },
+    )?;
+    println!("[{}] signed the sighash computed on this device; nonces discarded. Reply written to {}: send it to the coordinator.", seat.name, session::path(&dir, session::REPLY).display());
     Ok(())
+}
+
+/// `interop dkg`: this member's side of a joint DKG with other software.
+fn interop_dkg(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let out = PathBuf::from(option(args, "--out").unwrap_or("vault"));
+    if out.join("vault.json").exists() && !flag(args, "--force") {
+        return Err(format!("{} already holds a vault (it may hold funds); use --force to replace it", out.display()).into());
+    }
+    let vault_id: [u8; 16] = match option(args, "--vault-id") {
+        Some(text) => hex::decode(text)?.try_into().map_err(|_| "the vault id is 16 bytes (32 hex characters)")?,
+        None => {
+            let id = rand::random();
+            println!("new vault id {}: give it to the other members, who pass it with --vault-id.", hex::encode(id));
+            id
+        }
+    };
+    interop::dkg(
+        option(args, "--network").unwrap_or("test"),
+        vault_id,
+        number(args, "--threshold")?.unwrap_or(2),
+        number(args, "--members")?.unwrap_or(2),
+        Path::new(option(args, "--dir").unwrap_or("exchange")),
+        &out,
+    )
 }
 
 fn print_report(who: &str, report: &check::Report) {
@@ -342,15 +486,7 @@ fn print_report(who: &str, report: &check::Report) {
     }
 }
 
-fn network_type(name: &str) -> Result<NetworkType, Box<dyn Error>> {
-    match name {
-        "main" => Ok(NetworkType::Main),
-        "test" => Ok(NetworkType::Test),
-        other => Err(format!("unknown network `{other}` (use main or test)").into()),
-    }
-}
-
-fn single_key(index: u16) -> Result<frost::keys::KeyPackage, Box<dyn Error>> {
+fn single_key(index: u16) -> Result<KeyPackage, Box<dyn Error>> {
     store::load_signers(&[index])?.into_values().next().ok_or_else(|| "missing key".into())
 }
 

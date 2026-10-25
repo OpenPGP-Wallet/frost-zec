@@ -6,3 +6,5 @@
 !tests/fixtures/*.pczt
 /funding
 *.log
+/vault
+/exchange

@@ -58,6 +58,7 @@ check that the sighash matches a transaction already signed and mined.
 cargo run -- selftest                    # offline: DKG, every pair signs, a single share cannot
 cargo run -- keygen --network main       # create the group, print the viewing key and address
 cargo run -- info
+cargo run -- inspect --pczt proven.pczt  # what a PCZT does, checked as the co-signer would, without signing
 
 # wallet side, with zcash-devtool
 zcash-devtool wallet -w wallet init-fvk --name frost-group --fvk <viewing key>
@@ -73,21 +74,46 @@ Two devices, in two terminals (files in `session/` stand in for the encrypted
 QR codes of the real app):
 
 ```bash
-cargo run -- coordinate --as 1 --cosigner 2 --pczt proven.pczt --out signed.pczt
-cargo run -- cosign --as 2     # shows what it is about to sign and asks for approval
+cargo run -- cosign --as 2     # sends its commitments, then shows what it is about to sign and asks for approval
+cargo run -- coordinate --as 1 --pczt proven.pczt --out signed.pczt
 ```
 
 Both devices run the same PCZT checks: the coordinator does not trust
-whatever built the transaction either. The session files are removed when
-the session ends. `cosign --yes` skips the human approval and exists only for
-automated tests.
+whatever built the transaction either. The co-signer opens the session with
+its nonce commitments, before it sees the transaction. The PCZT is removed
+from the session directory once read, and the other files when the session
+ends. `cosign --yes` skips the human approval and exists only for automated
+tests.
+
+## One vault, two implementations
+
+`interop dkg` creates a vault together with members running other software,
+in Zafe's key profile (identifiers derived from an identity key, `sk` agreed
+by commitment and reveal), and `--vault DIR` signs with that seat:
+
+```bash
+cargo run -- interop dkg --network main --vault-id <16 bytes hex> --dir exchange --out vault
+cargo run -- coordinate --vault vault --dir session --pczt proven.pczt --out signed.pczt
+cargo run -- cosign --vault vault --dir session
+```
+
+The messages are JSON files, described in [docs/interop.md](docs/interop.md).
+A local harness running zafe-core's own key generation, signing and
+verification code checked that both sides end up with the same vault and sign
+the same transaction, in both directions.
 
 ## Testnet and NU7
 
-Public testnet activated NU7 at height 4,465,026 (Zebra 7.0.0-rc.0), and the
-released wallet tooling does not support it yet, so the first spends were
-made on mainnet with small amounts. Mainnet is expected to activate NU7 in
-November 2026.
+Public testnet activated NU7 at height 4,465,026 (Zebra 7.0.0-rc.0) before
+any released wallet tooling supported it, so the first spends were made on
+mainnet with small amounts. Mainnet activates NU7 at height 3,543,405 (around
+November 5, 2026). frost-zec uses the library releases of 2026-10-21, which
+know both heights. The PCZT encoding did not change, and the signatures of the
+three spends below verify under the sighash the current code computes.
+
+zcash-devtool's main branch still pins a librustzcash revision without the
+mainnet height. After activation, build it against the 2026-10-21 releases
+(a handful of small API changes in its inspection and migration commands).
 
 ## Transactions on mainnet
 
@@ -112,8 +138,9 @@ transaction with one spend authorization signature:
 - Keep `qsk` split 2-of-3 across the devices instead of keeping `sk`, so that
   no single device can spend through the future recovery protocol.
 - Encrypted QR codes instead of files.
-- Interoperability with other FROST wallets (common message and backup format). Backup format
-  draft: [docs/backup-format.md](docs/backup-format.md).
+- A spend on chain from a vault shared with a Zafe member, then a common
+  backup format with the other FROST wallets (draft:
+  [docs/backup-format.md](docs/backup-format.md)).
 
 ## License
 
