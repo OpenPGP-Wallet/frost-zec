@@ -5,8 +5,8 @@ Status: discussion draft, not a ZIP. Comments welcome.
 ## Why
 
 Every FROST wallet for shielded ZEC has its own member backup: Zkool has the `zkfrost` string
-([zkool2#1337](https://github.com/hhanh00/zkool2/pull/1337)), Zafe an encrypted file, Konclave an
-export blob. A member can't restore their seat in another app. The goal is a small common format that
+([zkool2#1337](https://github.com/hhanh00/zkool2/pull/1337), shipped in Zkool 6.35.0), Zafe an
+encrypted file, Konclave a share export. A member can't restore their seat in another app. The goal is a small common format that
 any app can read, with room for app-specific data.
 
 ## What a member backup holds
@@ -18,22 +18,28 @@ Exactly what is needed to rebuild one member, nothing else:
 | participant identifier | see below | the member's FROST identifier |
 | `t`, `n` | 1 byte each | threshold and group size |
 | signing share | 32 bytes | the member's share of `ask` |
-| `sk` | 32 bytes | the group's ZIP 2005 `sk`; `nk`, `qsk`, `qk` and `rivk` are derived from it (`use_qsk = true`) |
+| `sk` | 32 bytes | the group's shared Orchard spending key; `nk` and `rivk` are derived from it, the legacy way or under ZIP 2005 (`use_qsk = true`, which also gives `qsk` and `qk`, and uses `ak` for `rivk`) |
 
 `ak` is not stored: it comes from the group's UFVK, which the restore asks for. The format does not
 care how `sk` was agreed (mailbox addresses in Zkool, COCKTAIL-DKG elsewhere), only what is kept.
 
+Version 1 doesn't say which derivation the group uses. Zkool writes the same string for its legacy
+groups and for its ZIP 2005 ones, and the restore tells them apart by checking both against the UFVK.
+For a legacy group the string is a device-loss backup only: the notes are not quantum recoverable.
+
 ## Encoding
 
-A bech32m string (no 90-character limit, as in ZIP 316) whose payload starts with a version byte.
+A bech32m string with the human-readable part `zkfrost` (no 90-character limit, as in ZIP 316)
+whose payload starts with a version byte.
 Version 1 is byte-for-byte Zkool's 68-byte `zkfrost` payload (version, id, t, n, share, sk), so
 existing Zkool backups stay valid.
 
 ## Restore
 
-Inputs: the string and the group's UFVK. Recompute `nk` and `rivk` from `sk` and `ak`, and refuse the
-string if they don't match the UFVK (it belongs to another group). Then rebuild the key package from
-the identifier, the share, `t` and `ak`.
+Inputs: the string and the group's UFVK. Recompute `nk` and `rivk` from `sk` and `ak` under each
+known derivation (legacy and ZIP 2005): the one that matches the UFVK is the group's. If none
+matches, refuse the string (it belongs to another group). Then rebuild the key package from the
+identifier, the share, `t` and `ak`.
 
 ## Optional profiles
 
@@ -50,29 +56,32 @@ Selected by the version byte, never the baseline:
 
 ## Open points
 
-- **Identifier encoding.** Zkool uses a 1-byte identifier (1 to n). Zafe uses
-  `Identifier::derive(sigPk || vaultId)`, a full 32-byte scalar. A common format needs both, for
-  example a type byte followed by a short or a full identifier.
+- **Identifier encoding.** Zkool uses a 1-byte identifier (1 to n). Zafe derives a full 32-byte
+  scalar from the vault id and the member's identity key:
+  `Identifier::derive("Zafe member identifier v1" || vault_id || identity_pk)`. A common format needs
+  both, for example a type byte followed by a short or a full identifier.
 - **Share sign.** Orchard requires `ak` with an even y-coordinate, so some implementations negate the
   shares after the DKG. The format should state that the stored share is the one matching the final
   `ak`, or another app would rebuild a wrong share.
-- **Birthday height.** Zkool restores with a birthday at Orchard activation (block 1,687,104), which
-  means scanning millions of blocks. An optional 4-byte birthday height would make a restore much
-  faster. Even without it, a group whose keys follow ZIP 2005 (Zkool's dkg-2, from zkool2#1337) was
-  created after NU6.3, so its restore can start at Ironwood activation (block 3,428,143), about 1.7
-  million blocks later.
-- **Derivation profile.** Version 1 assumes ZIP 2005 (`use_qsk`). The group descriptor should record
-  the derivation profile as an explicit identifier instead, so the same envelope stays valid if
-  another derivation scheme appears later (raised by benjoshyo on the forum thread). This is separate
-  from how `sk` is agreed, which the format still leaves open.
+- **Birthday height.** By default, Zkool restores with a birthday at Orchard activation (block
+  1,687,104 on mainnet), which means scanning millions of blocks. An optional 4-byte birthday height
+  would make a restore much faster. Even without it, a group whose keys follow ZIP 2005 (Zkool's
+  dkg-2, from zkool2#1337) was created after NU6.3, so its restore can start at Ironwood activation
+  (block 3,428,143 on mainnet), about 1.7 million blocks later.
+- **Derivation profile.** Version 1 doesn't record the derivation: a restore finds it by trying each
+  known one against the UFVK, which works only while there are few of them and the UFVK is at hand.
+  The group descriptor should record it as an explicit identifier instead (Zafe already keeps
+  `use_qsk` in its vault descriptor), so the same envelope stays valid if another derivation scheme
+  appears later (raised by benjoshyo on the forum thread). This is separate from how `sk` is agreed,
+  which the format still leaves open.
 - **Test vectors** for every version, encode and decode.
 
 ## Out of scope
 
-How `sk` is agreed, the DKG, and the signing transport. One note on transport: in Zkool's memo
-transport a t=3 signing package already takes 506 of the 512 memo bytes and t=4 takes 607, so a 4-of-n
-group can't sign (zkool2#1339). Signing messages should stay independent of the transport (QR codes or
-files have no such limit).
+How `sk` is agreed, the DKG, and the signing transport. One note on transport: Zkool's memo
+transport had to split its signing package into one memo per signer, because a single 512-byte memo
+stopped fitting at t = 4 (zkool2#1339, fixed by #1342); its round-1 DKG message still caps t at 13.
+Signing messages should stay independent of the transport (QR codes or files have no such limit).
 
-Related: zkool2#1338 reduces a Zkool member's stored state to the `zkfrost` payload plus `ak`, the DKG
-version and a mailbox seed, which matches the content above.
+Related: zkool2#1338 (open) proposes to reduce a Zkool member's stored state to the `zkfrost` payload
+plus `ak`, the DKG version and a mailbox seed, which matches the content above.
