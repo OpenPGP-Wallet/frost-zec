@@ -33,7 +33,17 @@ For a legacy group the string is a device-loss backup only: the notes are not qu
 A bech32m string with the human-readable part `zkfrost` (no 90-character limit, as in ZIP 316)
 whose payload starts with a version byte.
 Version 1 is byte-for-byte Zkool's 68-byte `zkfrost` payload (version, id, t, n, share, sk), so
-existing Zkool backups stay valid.
+existing Zkool backups stay valid. The payload names no network and the prefix is the same on
+mainnet and testnet: the UFVK gives the network, and the restore's check against it catches a string
+from another group on either network.
+
+The stored share is the one that matches the `ak` in the UFVK. Key generation can output a group key
+with an odd y-coordinate, which Orchard does not accept; the group key and every share are then
+negated. reddsa does this at the end of its DKG and dealer key generation (the one Zkool calls), and
+frost-client does it after the DKG. aryaethn forced DKGs whose raw group key came out odd: Zkool's
+and frost-client's shares were byte-identical, both restored from the string and signed under `ak`,
+and the unflipped share failed. An app on plain frost-core that skips the flip would export a wrong
+share about half the time.
 
 ## Restore
 
@@ -41,6 +51,11 @@ Inputs: the string and the group's UFVK. Recompute `nk` and `rivk` from `sk` and
 known derivation (legacy and ZIP 2005): the one that matches the UFVK is the group's. If none
 matches, refuse the string (it belongs to another group). Then rebuild the key package from the
 identifier, the share, `t` and `ak`.
+
+The UFVK check proves `sk`, not the share. A wrong share is caught at the first signing, when the
+signers' verifying shares, which travel with their commitments, are interpolated against `ak`. So the
+format relies on the signing messages carrying verifying shares, even though the transport is out of
+scope here.
 
 ## Optional profiles
 
@@ -57,18 +72,15 @@ Selected by the version byte, never the baseline:
 
 ## Open points
 
-- **Identifier encoding.** Zkool uses a 1-byte identifier (1 to n). Zafe derives a full 32-byte
-  scalar from the vault id and the member's identity key:
-  `Identifier::derive("Zafe member identifier v1" || vault_id || identity_pk)`. A common format needs
-  both, for example a type byte followed by a short or a full identifier.
-- **Share sign.** Orchard requires `ak` with an even y-coordinate, so some implementations negate the
-  shares after the DKG. The format should state that the stored share is the one matching the final
-  `ak`, or another app would rebuild a wrong share.
-- **Birthday height.** By default, Zkool restores with a birthday at Orchard activation (block
-  1,687,104 on mainnet), which means scanning millions of blocks. An optional 4-byte birthday height
-  would make a restore much faster. Even without it, a group whose keys follow ZIP 2005 (Zkool's
-  dkg-2, from zkool2#1337) was created after NU6.3, so its restore can start at Ironwood activation
-  (block 3,428,143 on mainnet), about 1.7 million blocks later.
+- **Identifier encoding.** Zkool uses a 1-byte identifier (1 to n). frost-client derives a full
+  32-byte scalar as `Identifier::derive(session_id || pubkey)`, and Zafe as
+  `Identifier::derive("Zafe member identifier v1" || vault_id || identity_pk)`. With two of the three
+  implementations on full identifiers, a type byte followed by a short or a full identifier is needed
+  for their groups to fit.
+- **Birthday height.** Left out of the string: zcash/zips#1401 proposes to carry it in the UFVK, which
+  the restore already needs. Until then, Zkool restores from Orchard activation by default (block
+  1,687,104 on mainnet), and a Zkool ZIP 2005 group (dkg-2, from zkool2#1337) can start at Ironwood
+  activation (block 3,428,143), since such groups were created after NU6.3.
 - **Derivation profile.** Version 1 doesn't record the derivation: a restore finds it by trying each
   known one against the UFVK, which works only while there are few of them and the UFVK is at hand.
   The group descriptor should record it as an explicit identifier instead (Zafe already keeps
