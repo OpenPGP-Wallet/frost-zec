@@ -18,7 +18,7 @@ use std::error::Error;
 use ff::{FromUniformBytes, PrimeField};
 use orchard::keys::{FullViewingKey, Scope};
 use pasta_curves::pallas;
-use zcash_address::unified::{self, Encoding};
+use zcash_address::unified::{self, Container, Encoding};
 use zcash_protocol::consensus::NetworkType;
 
 const QK_CONTEXT: &str = "Zcash ZIP 2005 qk-derivation v1";
@@ -76,13 +76,25 @@ pub fn derive(sk: &[u8; 32], ak: &[u8; 32]) -> Result<GroupKeys, Box<dyn Error>>
     let qsk: [u8; 32] = prf_expand(sk, &[&[0x0c]])[..32].try_into()?;
     let qk = blake3::derive_key(QK_CONTEXT, &qsk);
     let rivk = to_scalar(&prf_expand(&qk, &[&[0x0d], ak, &nk])).to_repr();
+    Ok(GroupKeys { fvk: full_viewing_key(ak, &nk, &rivk)?, qk, qsk })
+}
 
+/// The legacy derivation of groups Zkool made before it supported ZIP 2005:
+/// nk = H^nk(sk) and rivk = H^rivk(sk), with the group key as ak. Notes
+/// received by these keys are not quantum recoverable. Only used to restore
+/// such a group's backups.
+pub fn derive_legacy(sk: &[u8; 32], ak: &[u8; 32]) -> Result<FullViewingKey, Box<dyn Error>> {
+    let nk = to_base(&prf_expand(sk, &[&[0x07]])).to_repr();
+    let rivk = to_scalar(&prf_expand(sk, &[&[0x08]])).to_repr();
+    full_viewing_key(ak, &nk, &rivk)
+}
+
+fn full_viewing_key(ak: &[u8; 32], nk: &[u8; 32], rivk: &[u8; 32]) -> Result<FullViewingKey, Box<dyn Error>> {
     let mut bytes = [0u8; 96];
     bytes[..32].copy_from_slice(ak);
-    bytes[32..64].copy_from_slice(&nk);
-    bytes[64..].copy_from_slice(&rivk);
-    let fvk = FullViewingKey::from_bytes(&bytes).ok_or("these keys do not form a valid full viewing key")?;
-    Ok(GroupKeys { fvk, qk, qsk })
+    bytes[32..64].copy_from_slice(nk);
+    bytes[64..].copy_from_slice(rivk);
+    Ok(FullViewingKey::from_bytes(&bytes).ok_or("these keys do not form a valid full viewing key")?)
 }
 
 /// The unified full viewing key, with its Orchard component only (Ironwood
@@ -90,6 +102,18 @@ pub fn derive(sk: &[u8; 32], ak: &[u8; 32]) -> Result<GroupKeys, Box<dyn Error>>
 pub fn ufvk(fvk: &FullViewingKey, network: NetworkType) -> Result<String, Box<dyn Error>> {
     let ufvk = unified::Ufvk::try_from_items(unified::Revision::R0, vec![unified::Uitem::Data(unified::Fvk::Orchard(fvk.to_bytes()))])?;
     Ok(ufvk.encode(&network))
+}
+
+/// The network and the Orchard full viewing key of a unified full viewing key.
+pub fn parse_ufvk(text: &str) -> Result<(NetworkType, FullViewingKey), Box<dyn Error>> {
+    let (network, _, ufvk) = unified::Ufvk::decode(text.trim())?;
+    for item in ufvk.items() {
+        if let unified::Fvk::Orchard(bytes) = item {
+            let fvk = FullViewingKey::from_bytes(&bytes).ok_or("invalid Orchard full viewing key")?;
+            return Ok((network, fvk));
+        }
+    }
+    Err("the viewing key has no Orchard component".into())
 }
 
 /// The group's first external address, as a unified address.

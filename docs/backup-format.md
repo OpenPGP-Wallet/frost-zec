@@ -1,6 +1,7 @@
 # FROST member backup for shielded Zcash: a common format (draft)
 
-Status: discussion draft, not a ZIP. Comments welcome.
+Status: discussion draft, being written up as a ZIP with aryaethn
+([zcash/zips#1413](https://github.com/zcash/zips/issues/1413)). Comments welcome.
 
 ## Why
 
@@ -74,7 +75,20 @@ Selected by the version byte, never the baseline:
   `use_qsk` in its vault descriptor), so the same envelope stays valid if another derivation scheme
   appears later (raised by benjoshyo on the forum thread). This is separate from how `sk` is agreed,
   which the format still leaves open.
-- **Test vectors** for every version, encode and decode.
+- **Test vectors** for each later version (version 1: see below).
+
+## Implementations and test vectors
+
+Version 1 is implemented by Zkool (`rust/src/frost/backup.rs`, released in
+6.35.0) and by frost-zec ([src/backup.rs](../src/backup.rs), commands
+`backup export` and `backup restore`), written separately.
+[tests/fixtures/frost-member-backup-vectors.json](../tests/fixtures/frost-member-backup-vectors.json)
+covers a ZIP 2005 group, a legacy group with the ZIP 2005 key Zkool's upgrade
+builds from the same `sk` and `ak`, a 3-of-5 group, an uppercase string, 13
+strings to reject and a string checked against another group's key.
+[tools/zip-vectors](../tools/zip-vectors) generates it, checks it against
+Zkool's own decoder and derivation matcher, and checks that every t-subset of
+members restored from their strings signs under `ak`.
 
 ## Out of scope
 

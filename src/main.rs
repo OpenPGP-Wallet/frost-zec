@@ -21,12 +21,17 @@
 //!               [--dir exchange] [--out vault] [--force]
 //!                                             create a vault with members running other
 //!                                             software, in Zafe's key profile (docs/interop.md)
+//!   backup export [--as 1 | --vault DIR]      one member's backup string (docs/backup-format.md)
+//!   backup restore --in FILE --ufvk KEY [--save]
+//!                                             rebuild a member from its string and the group's
+//!                                             viewing key; --save writes it back into data/
 //!
 //! Run `coordinate` and `cosign` in two terminals: they talk through files in
 //! the --dir directory, which stand in for the encrypted QR codes of the real
 //! app. `--as N` uses participant N of the group in data/; `--vault DIR` uses a
 //! seat created with `interop dkg`.
 
+mod backup;
 mod check;
 mod dkg;
 mod interop;
@@ -74,8 +79,10 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("coordinate") => coordinate(&args[1..]),
         Some("cosign") => cosign(&args[1..]),
         Some("interop") if args.get(1).map(String::as_str) == Some("dkg") => interop_dkg(&args[2..]),
+        Some("backup") if args.get(1).map(String::as_str) == Some("export") => backup_export(&args[2..]),
+        Some("backup") if args.get(1).map(String::as_str) == Some("restore") => backup_restore(&args[2..]),
         _ => {
-            eprintln!("usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg> [options]\nsee the comment at the top of src/main.rs for the options");
+            eprintln!("usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg | backup export | backup restore> [options]\nsee the comment at the top of src/main.rs for the options");
             Ok(())
         }
     }
@@ -474,6 +481,46 @@ fn interop_dkg(args: &[String]) -> Result<(), Box<dyn Error>> {
         Path::new(option(args, "--dir").unwrap_or("exchange")),
         &out,
     )
+}
+
+/// Prints one member's backup string, followed by the viewing key the restore
+/// needs. The string is as secret as the share: it holds the share and sk.
+fn backup_export(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let seat = Seat::load(args, 1)?;
+    let sk = match option(args, "--vault") {
+        Some(dir) => interop::Vault::load(Path::new(dir))?.sk,
+        None => store::load_group()?.sk,
+    };
+    let sk: [u8; 32] = hex::decode(sk)?.try_into().map_err(|_| "bad sk")?;
+    let n = u16::try_from(seat.public_key_package.verifying_shares().len())?;
+    let text = backup::Backup::new(&seat.key_package, n, &sk)?.encode()?;
+    println!("[{}] backup string (secret, keep it offline):\n{text}", seat.name);
+    println!("viewing key (needed to restore): {}", keys::ufvk(&seat.fvk, seat.network)?);
+    Ok(())
+}
+
+/// Rebuilds a member from its string and the group's viewing key, and says
+/// which derivation the group follows. With --save, puts the member back into
+/// the group in data/, after checking it is the same group.
+fn backup_restore(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let path = option(args, "--in").ok_or("missing --in FILE (the file holding the backup string)")?;
+    let ufvk = option(args, "--ufvk").ok_or("missing --ufvk KEY (the group's unified full viewing key)")?;
+    let restored = backup::restore(&fs::read_to_string(path)?, ufvk)?;
+    let b = &restored.backup;
+    println!("member {}, threshold {} of {}, network {:?}", b.id, b.t, b.n, restored.network);
+    match restored.derivation {
+        backup::Derivation::Zip2005 => println!("derivation: ZIP 2005 (use_qsk), notes are quantum recoverable"),
+        backup::Derivation::Legacy => println!("derivation: legacy, WARNING: this group's notes are not quantum recoverable"),
+    }
+    if flag(args, "--save") {
+        let group = store::load_group()?;
+        if group_fvk(&group)? != restored.fvk {
+            return Err("this backup belongs to another group than the one in data/".into());
+        }
+        store::save_participant(u16::from(b.id), &restored.key_package)?;
+        println!("saved as participant {} in data/", b.id);
+    }
+    Ok(())
 }
 
 fn print_report(who: &str, report: &check::Report) {

@@ -645,6 +645,7 @@ dependencies = [
 name = "frost-zec"
 version = "0.1.0"
 dependencies = [
+ "bech32",
  "blake2b_simd",
  "blake3",
  "ff 0.14.0",

@@ -102,6 +102,26 @@ A local harness running zafe-core's own key generation, signing and
 verification code checked that both sides end up with the same vault and sign
 the same transaction, in both directions.
 
+## Member backups
+
+`backup export` prints one member's backup string: the draft common format of
+[docs/backup-format.md](docs/backup-format.md), whose version 1 is Zkool's
+`zkfrost` string: a string made here passes Zkool's own decoder and derivation
+check, and Zkool's encoder gives the same strings as this one.
+`backup restore` rebuilds the member from the string and the group's viewing
+key, and tells whether the group follows ZIP 2005 or Zkool's older derivation:
+
+```bash
+cargo run -- backup export --as 2 > member-2.txt   # secret: it holds the share and sk
+cargo run -- backup restore --in string.txt --ufvk <viewing key> --save
+```
+
+[src/backup.rs](src/backup.rs) is written from the draft's rules, apart from
+Zkool's code. Both pass the same test vectors
+([tests/fixtures/frost-member-backup-vectors.json](tests/fixtures/frost-member-backup-vectors.json)),
+which [tools/zip-vectors](tools/zip-vectors) generates and checks against
+Zkool's own decoder and derivation matcher, copied unchanged.
+
 ## Testnet and NU7
 
 Public testnet activated NU7 at height 4,465,026 (Zebra 7.0.0-rc.0) before
@@ -138,9 +158,9 @@ transaction with one spend authorization signature:
 - Keep `qsk` split 2-of-3 across the devices instead of keeping `sk`, so that
   no single device can spend through the future recovery protocol.
 - Encrypted QR codes instead of files.
-- A spend on chain from a vault shared with a Zafe member, then a common
-  backup format with the other FROST wallets (draft:
-  [docs/backup-format.md](docs/backup-format.md)).
+- A spend on chain from a vault shared with a Zafe member.
+- The backup format as a ZIP, co-owned with aryaethn
+  ([zcash/zips#1413](https://github.com/zcash/zips/issues/1413)).
 
 ## License
 

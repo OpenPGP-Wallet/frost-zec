@@ -8,6 +8,7 @@ license = "MIT"
 # encoding as before, so files from zcash-devtool still parse here and go back
 # to it unchanged.
 [dependencies]
+bech32 = "0.11"
 blake2b_simd = "1.0.4"
 blake3 = "1"
 ff = "0.14"

@@ -55,6 +55,13 @@ pub fn save(
     Ok(())
 }
 
+/// Writes one participant's key package, e.g. after a restore from its backup.
+pub fn save_participant(index: u16, key_package: &KeyPackage) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(DIR)?;
+    fs::write(participant_file(index), hex::encode(key_package.serialize()?))?;
+    Ok(())
+}
+
 pub fn load_group() -> Result<Group, Box<dyn Error>> {
     let bytes = fs::read(Path::new(DIR).join(GROUP_FILE)).map_err(|_| "no keys yet: run `keygen` first")?;
     Ok(serde_json::from_slice(&bytes)?)
