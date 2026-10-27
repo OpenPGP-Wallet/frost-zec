@@ -41,7 +41,7 @@ The stored share is the one that matches the `ak` in the UFVK. Key generation ca
 with an odd y-coordinate, which Orchard does not accept; the group key and every share are then
 negated. reddsa does this at the end of its DKG and dealer key generation (the one Zkool calls), and
 frost-client does it after the DKG. aryaethn forced DKGs whose raw group key came out odd: Zkool's
-and frost-client's shares were byte-identical, both restored from the string and signed under `ak`,
+and frost-client's shares were byte-identical, both rebuilt from the share and signed under `ak`,
 and the unflipped share failed. An app on plain frost-core that skips the flip would export a wrong
 share about half the time.
 
