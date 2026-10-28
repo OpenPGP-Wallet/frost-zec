@@ -65,13 +65,16 @@ impl Backup {
     }
 
     /// Rejects anything that is not a well-formed version 1 string: bad
-    /// Bech32m (checksum, mixed case), another prefix, a wrong length, an
-    /// unknown version, or an identifier or threshold outside 1..=n.
+    /// Bech32m (checksum, mixed case, padding), another prefix, a wrong
+    /// length, an unknown version, or an identifier or threshold outside 1..=n.
     pub fn decode(text: &str) -> Result<Backup, Box<dyn Error>> {
         let checked = CheckedHrpstring::new::<Bech32m>(text.trim()).map_err(|e| format!("not a valid backup string: {e}"))?;
         if checked.hrp().to_lowercase() != HRP {
             return Err("not a FROST member backup string".into());
         }
+        // ZIP 173: the bits left over by the conversion to bytes must be at
+        // most 4 and all zero, so each payload has only one lowercase string.
+        checked.validate_segwit_padding().map_err(|e| format!("not a valid backup string: {e}"))?;
         let payload: Vec<u8> = checked.byte_iter().collect();
         if payload.len() != PAYLOAD_LEN {
             return Err(format!("the backup string holds {} bytes instead of {PAYLOAD_LEN}", payload.len()).into());

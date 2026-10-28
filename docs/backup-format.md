@@ -37,6 +37,10 @@ existing Zkool backups stay valid. The payload names no network and the prefix i
 mainnet and testnet: the UFVK gives the network, and the restore's check against it catches a string
 from another group on either network.
 
+As ZIP 173 requires, the bits left over when the string is converted back to bytes must be at most 4
+and all zero (a version 1 string leaves 1 bit). Decoders that drop them unchecked accept a second
+spelling of the same payload; Zkool 6.35.0 does, frost-zec rejects it.
+
 The stored share is the one that matches the `ak` in the UFVK. Key generation can output a group key
 with an odd y-coordinate, which Orchard does not accept; the group key and every share are then
 negated. reddsa does this at the end of its DKG and dealer key generation (the one Zkool calls), and
@@ -96,11 +100,12 @@ Version 1 is implemented by Zkool (`rust/src/frost/backup.rs`, released in
 `backup export` and `backup restore`), written separately.
 [tests/fixtures/frost-member-backup-vectors.json](../tests/fixtures/frost-member-backup-vectors.json)
 covers a ZIP 2005 group, a legacy group with the ZIP 2005 key Zkool's upgrade
-builds from the same `sk` and `ak`, a 3-of-5 group, an uppercase string, 13
+builds from the same `sk` and `ak`, a 3-of-5 group, an uppercase string, 15
 strings to reject and a string checked against another group's key.
 [tools/zip-vectors](../tools/zip-vectors) generates it, checks it against
-Zkool's own decoder and derivation matcher, and checks that every t-subset of
-members restored from their strings signs under `ak`.
+Zkool's own decoder and derivation matcher (which rejects every bad string
+except the two padding cases), and checks that every t-subset of members
+restored from their strings signs under `ak`.
 
 ## Out of scope
 
