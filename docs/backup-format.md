@@ -39,7 +39,8 @@ from another group on either network.
 
 As ZIP 173 requires, the bits left over when the string is converted back to bytes must be at most 4
 and all zero (a version 1 string leaves 1 bit). Decoders that drop them unchecked accept a second
-spelling of the same payload; Zkool 6.35.0 does, frost-zec rejects it.
+spelling of the same payload. Zkool 6.35.0 does (fixed in
+[zkool2#1468](https://github.com/hhanh00/zkool2/pull/1468) for the next release); frost-zec rejects it.
 
 The stored share is the one that matches the `ak` in the UFVK. Key generation can output a group key
 with an odd y-coordinate, which Orchard does not accept; the group key and every share are then
