@@ -517,8 +517,13 @@ fn backup_restore(args: &[String]) -> Result<(), Box<dyn Error>> {
         if group_fvk(&group)? != restored.fvk {
             return Err("this backup belongs to another group than the one in data/".into());
         }
+        // sk only proves the group: check the share, identifier and threshold
+        // too, so a wrong string never replaces a good key.
+        backup::check_member(&restored, &store::load_public()?)?;
         store::save_participant(u16::from(b.id), &restored.key_package)?;
         println!("saved as participant {} in data/", b.id);
+    } else {
+        println!("not checked: the share, and ak in the viewing key, need the group's public keys (--save, with the group in data/)");
     }
     Ok(())
 }

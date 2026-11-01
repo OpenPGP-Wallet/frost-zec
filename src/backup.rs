@@ -16,7 +16,7 @@ use std::error::Error;
 use bech32::{Bech32m, Hrp, primitives::decode::CheckedHrpstring};
 use orchard::keys::{FullViewingKey, SpendingKey};
 use reddsa::frost::redpallas as frost;
-use frost::keys::{KeyPackage, SigningShare, VerifyingShare};
+use frost::keys::{KeyPackage, PublicKeyPackage, SigningShare, VerifyingShare};
 use frost::{Identifier, VerifyingKey};
 use zcash_protocol::consensus::NetworkType;
 
@@ -125,6 +125,31 @@ pub fn restore(text: &str, ufvk: &str) -> Result<Restored, Box<dyn Error>> {
     Ok(Restored { backup, derivation, key_package, fvk, network })
 }
 
+/// Checks a restored member against its group's public key package. The
+/// restore cannot do this alone: sk proves that the viewing key and the string
+/// go together, not that the share, the identifier, the threshold or ak are
+/// the group's (the draft's Restore, step 5, and its Security Considerations).
+pub fn check_member(restored: &Restored, public_key_package: &PublicKeyPackage) -> Result<(), Box<dyn Error>> {
+    let key_package = &restored.key_package;
+    let b = &restored.backup;
+    if key_package.verifying_key() != public_key_package.verifying_key() {
+        return Err("the viewing key's ak is not this group's key".into());
+    }
+    let expected = public_key_package
+        .verifying_shares()
+        .get(key_package.identifier())
+        .ok_or_else(|| format!("member {} is not in this group", b.id))?;
+    if expected != key_package.verifying_share() {
+        return Err(format!("member {}'s signing share does not match the group's verifying share", b.id).into());
+    }
+    if usize::from(b.n) != public_key_package.verifying_shares().len()
+        || public_key_package.min_signers().is_some_and(|t| t != u16::from(b.t))
+    {
+        return Err(format!("threshold {} of {} does not match this group", b.t, b.n).into());
+    }
+    Ok(())
+}
+
 /// The integer value of an identifier, when it is one from 1 to 255.
 fn small_identifier(id: &Identifier) -> Option<u8> {
     let bytes = id.serialize();
@@ -222,6 +247,38 @@ mod tests {
                 signing::sign(&rand::random(), &signing::random_alpha(), &pair, &rebuilt).unwrap();
             }
         }
+    }
+
+    /// Strings that carry the group's sk but another member's share or another
+    /// threshold, and a viewing key built around another ak, all pass the
+    /// restore; the check against the group's public key package catches each.
+    #[test]
+    fn the_group_check_catches_what_the_restore_cannot() {
+        let (key_packages, public_key_package) = dkg::run(3, 2).unwrap();
+        let ak = signing::group_ak(&public_key_package).unwrap();
+        let sk = keys::contributory_sk(&[rand::random(), rand::random(), rand::random()]);
+        let ufvk = keys::ufvk(&keys::derive(&sk, &ak).unwrap().fvk, NetworkType::Test).unwrap();
+        let mut members = key_packages.values().map(|key_package| Backup::new(key_package, 3, &sk).unwrap());
+        let (first, second) = (members.next().unwrap(), members.next().unwrap());
+
+        let good = restore(&first.encode().unwrap(), &ufvk).unwrap();
+        check_member(&good, &public_key_package).unwrap();
+
+        let swapped = Backup { id: first.id, t: first.t, n: first.n, share: second.share, sk };
+        let restored = restore(&swapped.encode().unwrap(), &ufvk).unwrap();
+        assert!(check_member(&restored, &public_key_package).unwrap_err().to_string().contains("verifying share"));
+
+        let threshold = Backup { id: first.id, t: 3, n: first.n, share: first.share, sk };
+        let restored = restore(&threshold.encode().unwrap(), &ufvk).unwrap();
+        assert!(check_member(&restored, &public_key_package).unwrap_err().to_string().contains("threshold"));
+
+        // Every member knows sk, so any of them can build a viewing key around
+        // an ak of its own that the restore accepts.
+        let (_, other_group) = dkg::run(2, 2).unwrap();
+        let forged = keys::ufvk(&keys::derive(&sk, &signing::group_ak(&other_group).unwrap()).unwrap().fvk, NetworkType::Test).unwrap();
+        let restored = restore(&first.encode().unwrap(), &forged).unwrap();
+        assert_eq!(restored.derivation, Derivation::Zip2005);
+        assert!(check_member(&restored, &public_key_package).unwrap_err().to_string().contains("ak is not"));
     }
 
     #[test]

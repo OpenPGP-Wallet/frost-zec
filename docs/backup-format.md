@@ -62,6 +62,12 @@ signers' verifying shares, which travel with their commitments, are interpolated
 format relies on the signing messages carrying verifying shares, even though the transport is out of
 scope here.
 
+Nor does it prove `ak`. Every member knows `sk`, so one of them can build a UFVK around an `ak` of
+its own that passes the check, and the restored wallet would then show addresses that member alone
+can spend from. Take the UFVK from the member's own export. When the group's public key package is
+at hand, check the share, `ak` and `t` against it: frost-zec does this before `backup restore
+--save` replaces a stored key.
+
 ## Optional profiles
 
 Selected by the version byte, never the baseline:

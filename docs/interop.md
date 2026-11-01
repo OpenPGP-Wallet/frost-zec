@@ -107,6 +107,15 @@ The request contains the PCZT, and with it every `α`: anyone who knows `α` and
 transaction to the vault. It must travel only between members, end-to-end encrypted, and each side
 deletes it once used.
 
+`α` is fixed when the PCZT is built, before the co-signer's commitments exist. ZIP 312 instead
+generates the randomizer after round 1, from the commitments (`randomizer_generate`), and that is the
+setting its security analysis covers. Here a dishonest coordinator could build a new PCZT, and so
+choose `α`, after seeing the co-signer's commitments. FROST's binding factors include the randomized
+key, so a different `α` gives different binding factors; the co-signer holds at most 4 nonces per
+session, and frost-zec runs one session per process. We know of no attack in this setting, but it is
+not the one ZIP 312's proof covers. A later version could send the PCZT first, so that the co-signer
+commits only once `α` is fixed.
+
 ## What this format leaves out
 
 Zafe wraps its messages in signed, HPKE-encrypted envelopes sent through its relay, has the members
