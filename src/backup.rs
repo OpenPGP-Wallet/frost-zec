@@ -66,7 +66,8 @@ impl Backup {
 
     /// Rejects anything that is not a well-formed version 1 string: bad
     /// Bech32m (checksum, mixed case, padding), another prefix, a wrong
-    /// length, an unknown version, or an identifier or threshold outside 1..=n.
+    /// length, an unknown version, an identifier outside 1..=n, or a threshold
+    /// outside 2..=n (FROST needs at least two signers).
     pub fn decode(text: &str) -> Result<Backup, Box<dyn Error>> {
         let checked = CheckedHrpstring::new::<Bech32m>(text.trim()).map_err(|e| format!("not a valid backup string: {e}"))?;
         if checked.hrp().to_lowercase() != HRP {
@@ -83,7 +84,7 @@ impl Backup {
             return Err(format!("backup string version {} is not supported", payload[0]).into());
         }
         let (id, t, n) = (payload[1], payload[2], payload[3]);
-        if n == 0 || id == 0 || id > n || t == 0 || t > n {
+        if n == 0 || id == 0 || id > n || t < 2 || t > n {
             return Err(format!("invalid backup string: member {id}, threshold {t} of {n}").into());
         }
         Ok(Backup { id, t, n, share: payload[4..36].try_into()?, sk: payload[36..].try_into()? })
