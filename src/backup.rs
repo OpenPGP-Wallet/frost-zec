@@ -77,11 +77,13 @@ impl Backup {
         // most 4 and all zero, so each payload has only one lowercase string.
         checked.validate_segwit_padding().map_err(|e| format!("not a valid backup string: {e}"))?;
         let payload: Vec<u8> = checked.byte_iter().collect();
+        // The version first, so that a later version is reported as such
+        // rather than as a string of the wrong length.
+        if payload.first() != Some(&VERSION) {
+            return Err(format!("backup string version {:?} is not supported", payload.first()).into());
+        }
         if payload.len() != PAYLOAD_LEN {
             return Err(format!("the backup string holds {} bytes instead of {PAYLOAD_LEN}", payload.len()).into());
-        }
-        if payload[0] != VERSION {
-            return Err(format!("backup string version {} is not supported", payload[0]).into());
         }
         let (id, t, n) = (payload[1], payload[2], payload[3]);
         if n == 0 || id == 0 || id > n || t < 2 || t > n {
@@ -219,6 +221,12 @@ mod tests {
         let text = wrong["string"].as_str().unwrap();
         assert!(Backup::decode(text).is_ok());
         assert!(restore(text, wrong["ufvk_mainnet"].as_str().unwrap()).is_err());
+
+        for case in vectors["restore_invalid"].as_array().unwrap() {
+            let text = case["string"].as_str().unwrap();
+            assert!(Backup::decode(text).is_ok(), "does not decode: {}", case["reason"]);
+            assert!(restore(text, case["ufvk_mainnet"].as_str().unwrap()).is_err(), "restored: {}", case["reason"]);
+        }
     }
 
     /// Every member of a fresh group goes through its string, and every pair
