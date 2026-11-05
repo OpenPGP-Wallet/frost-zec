@@ -135,8 +135,8 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
             let spend = action.spend();
             let output = action.output();
             check_spend_structure(index, spend, &anchor, anchor_deferred)?;
-            // The value commitment ties each claimed value to what the proof
-            // commits to, so the values below cannot be faked.
+            // The value commitment only binds this action's net value. The
+            // note checks below are what bind the claimed values and recipient.
             action.verify_cv_net().map_err(|e| refuse(&format!("action {index}: value commitment"), &e))?;
             let spend_value = spend.value().map(|v| v.inner()).unwrap_or_default();
             let output_value = output.value().map(|v| v.inner()).unwrap_or_default();
