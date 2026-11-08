@@ -298,7 +298,7 @@ pub fn dkg(
     let mut round2_received = BTreeMap::new();
     let mut contributions = BTreeMap::from([(my_id, contribution)]);
     for path in &paths {
-        let message: Round2Message = serde_json::from_slice(&fs::read(path)?)?;
+        let message: Round2Message = session::wait_json(path, Instant::now() + session::TIMEOUT)?;
         if message.format != FORMAT || message.kind != "dkg-round2" || message.vault_id != hex::encode(vault_id) || message.to != hex::encode(my_id.serialize()) {
             return Err(format!("unexpected round 2 message in {}", path.display()).into());
         }
@@ -376,7 +376,7 @@ fn write_json<T: Serialize>(path: &Path, message: &T) -> Result<(), Box<dyn Erro
 /// Waits until `count` files `prefix*.json` (other than `own`) are in `dir`, then reads them.
 fn wait_for<T: for<'de> Deserialize<'de>>(dir: &Path, prefix: &str, own: Option<&str>, count: usize) -> Result<Vec<T>, Box<dyn Error>> {
     let paths = wait_for_paths(dir, prefix, |name| Some(name) != own, count)?;
-    paths.iter().map(|path| Ok(serde_json::from_slice(&fs::read(path)?)?)).collect()
+    paths.iter().map(|path| session::wait_json(path, Instant::now() + session::TIMEOUT)).collect()
 }
 
 fn wait_for_paths(dir: &Path, prefix: &str, keep: impl Fn(&str) -> bool, count: usize) -> Result<Vec<PathBuf>, Box<dyn Error>> {

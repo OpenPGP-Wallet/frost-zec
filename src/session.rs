@@ -101,14 +101,92 @@ pub fn send<T: Serialize>(dir: &Path, name: &str, message: &T) -> Result<(), Box
 
 /// Waits for a message, then reads it.
 pub fn receive<T: DeserializeOwned>(dir: &Path, name: &str) -> Result<T, Box<dyn Error>> {
-    let deadline = Instant::now() + TIMEOUT;
+    wait_json(&path(dir, name), Instant::now() + TIMEOUT)
+}
+
+/// How long a file that does not parse must stay unchanged before it counts as
+/// a wrong file rather than one still being copied in.
+pub const SETTLE: Duration = Duration::from_secs(2);
+
+/// Waits for `file` and reads it as JSON. A file passed by hand can show up
+/// before its copy ends (cut short, or already full size with zeros at the
+/// end), so one that does not parse is read again until it does. Only once it
+/// has stayed the same for `SETTLE` is it refused as a wrong message.
+pub fn wait_json<T: DeserializeOwned>(file: &Path, deadline: Instant) -> Result<T, Box<dyn Error>> {
+    let mut unparsed: Option<(Vec<u8>, Instant)> = None;
     loop {
-        if let Ok(bytes) = fs::read(path(dir, name)) {
-            return Ok(serde_json::from_slice(&bytes)?);
+        if let Ok(bytes) = fs::read(file) {
+            match serde_json::from_slice(&bytes) {
+                Ok(message) => return Ok(message),
+                Err(error) => match &unparsed {
+                    Some((seen, since)) if *seen == bytes => {
+                        if since.elapsed() >= SETTLE {
+                            return Err(format!("{} is not a valid message: {error}", file.display()).into());
+                        }
+                    }
+                    _ => unparsed = Some((bytes, Instant::now())),
+                },
+            }
         }
         if Instant::now() > deadline {
-            return Err(format!("timed out waiting for `{name}.json` in {}", dir.display()).into());
+            return Err(format!("timed out waiting for {}", file.display()).into());
         }
         thread::sleep(POLL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Message {
+        kind: String,
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("frost-zec-session-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A file read halfway through its copy (cut short, or full size with zeros
+    /// at the end) is read again until the copy ends.
+    #[test]
+    fn a_file_still_being_copied_is_waited_for() {
+        let complete = br#"{"kind": "sign-request"}"#.to_vec();
+        let mut zero_filled = complete[..10].to_vec();
+        zero_filled.resize(complete.len(), 0);
+        for (case, partial) in [("cut", complete[..10].to_vec()), ("zeros", zero_filled)] {
+            let dir = scratch(case);
+            let file = dir.join("request.json");
+            fs::write(&file, partial).unwrap();
+            let writer = {
+                let (file, complete) = (file.clone(), complete.clone());
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(800));
+                    fs::write(file, complete).unwrap();
+                })
+            };
+            let message: Message = wait_json(&file, Instant::now() + Duration::from_secs(10)).unwrap();
+            assert_eq!(message.kind, "sign-request", "{case}");
+            writer.join().unwrap();
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    /// A file that stays wrong is refused once it has settled, not after the
+    /// whole hour.
+    #[test]
+    fn a_wrong_file_is_refused_once_it_settles() {
+        let dir = scratch("wrong");
+        let file = dir.join("reply.json");
+        fs::write(&file, b"{\"kind\": 3}").unwrap();
+        let started = Instant::now();
+        let result: Result<Message, _> = wait_json(&file, started + Duration::from_secs(30));
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let _ = fs::remove_dir_all(dir);
     }
 }
