@@ -28,6 +28,7 @@ const HIGH_FEE: u64 = 100_000;
 /// The total supply of ZEC in zatoshis: no honest amount can be larger.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
+#[derive(Debug)]
 pub struct Report {
     pub lines: Vec<String>,
     pub warnings: Vec<String>,

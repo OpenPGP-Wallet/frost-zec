@@ -37,3 +37,8 @@ zcash_address = "=0.14.0"
 zcash_primitives = { version = "=0.31.0", default-features = false }
 zcash_protocol = "=0.11.0"
 zeroize = "1"
+
+[dev-dependencies]
+pczt = { version = "=0.10.0", features = ["io-finalizer", "zcp-builder", "signer"] }
+zcash_primitives = { version = "=0.31.0", default-features = false, features = ["std"] }
+zcash_protocol = "=0.11.0"
