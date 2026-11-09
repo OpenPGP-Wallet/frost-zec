@@ -42,6 +42,12 @@ Before pairing, messages are in clear (they hold no secret). After pairing,
 every message is sealed (§ 3.4) and its body is
 `{1: pairing id, 2: session, 3: nonce, 4: ciphertext}`.
 
+The protocol does not depend on QR codes. The same messages can travel as
+files, through a relay, or inside another wallet's own transport: the pairing
+code (§ 3.3) protects against a carrier that tampers with them, and sealed
+messages are bound to their pairing, direction, kind and session. QR codes are
+the reference carrier because they need no server and no network.
+
 ## 3. Pairing
 
 Implemented in `src/channel.rs`.
