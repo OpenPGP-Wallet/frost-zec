@@ -31,7 +31,7 @@ on (`use_qsk = true`). Every member holds `sk`.
 Messages travel as Uniform Resources (Blockchain Commons BCR-2020-005), shown
 as animated multi-part QR codes when they are large. This is the format
 Keystone (`ur:zcash-pczt`) and `zcash-devtool pczt qr` already use for PCZTs,
-so wallets can reuse their QR code. *(to implement)*
+so wallets can reuse their QR code. Implemented in `src/wire.rs`.
 
 - UR type: `zcash-frost`.
 - Payload: a CBOR array of one or more messages, so one QR stream can carry,
@@ -40,7 +40,25 @@ so wallets can reuse their QR code. *(to implement)*
 
 Before pairing, messages are in clear (they hold no secret). After pairing,
 every message is sealed (§ 3.4) and its body is
-`{1: pairing id, 2: session, 3: nonce, 4: ciphertext}`.
+`{1: pairing id, 2: inner kind, 3: session, 4: nonce, 5: ciphertext}`.
+
+| Kind | Message | Sent |
+|---|---|---|
+| 1 | pair-init | in clear |
+| 2 | pair-response | in clear |
+| 3 | pair-confirm | in clear |
+| 16 | sealed envelope | carries one of the kinds below |
+| 32 | dkg-round1 | sealed |
+| 33 | dkg-round2 | sealed |
+| 48 | sign-commitments | sealed |
+| 49 | sign-request | sealed |
+| 50 | sign-reply | sealed |
+
+A reader refuses a payload over 512 KiB or a stream of more than 4096
+fragments, other UR types and unknown versions. UR checks that parts belong
+together with a CRC-32, which a forger can match; that is enough here, because
+a payload assembled from forged parts fails one layer up, on the pairing code
+or on a sealed message's authentication tag.
 
 The protocol does not depend on QR codes. The same messages can travel as
 files, through a relay, or inside another wallet's own transport: the pairing
@@ -117,26 +135,42 @@ like its key share. The pairing has no forward secrecy beyond that: someone
 who steals a device can read recorded messages, but that device already holds
 its share and `sk`.
 
-## 4. Key generation *(to implement)*
+## 4. Key generation
 
-The FROST DKG of `reddsa` (three parts), run over the pairing, with the
-co-signer playing members 2 and 3. `sk` is agreed by commit and reveal: each
-member commits to 32 random bytes in round 1 and reveals them in round 2, and
-`sk` is the hash of the transcript and all contributions in identifier order.
-Every round 2 message carries a hash of the round 1 messages its sender saw,
-and members abort if those differ.
+Implemented in `src/setup.rs`. The FROST DKG of `reddsa` (three parts), 2-of-3,
+run over the pairing, with the co-signer playing members 2 and 3. On top of
+it, the members agree on `sk` by commit and reveal:
 
-Planned exchange (five QR streams including pairing): pair-init; pair-response
-with the co-signer's round 1 for members 2 and 3; pair-confirm with the
-coordinator's round 1; then, once the code is confirmed on both devices, round
-2 from the co-signer and round 2 from the coordinator. Both devices then show
-the group's address for a last comparison.
+    c_i = H_"ZcashFROSTv0SkCm"(version || LE16(i) || r_i)       in round 1
+    T   = H_"ZcashFROSTv0DkgT"(version || network || LE16(t) || LE16(n) ||
+            for i = 1..3: LE16(i) || LE32(len) || round1_package_i || c_i)
+    sk  = H_"ZcashFROSTv0DkSk"(T || ak || r_1 || r_2 || r_3)
 
-The co-signer exports member 3 as a member backup string (§ 7) and deletes it.
+`r_i` is 32 random bytes, revealed in round 2, and `ak` is the group key. Every
+round 2 message carries `T` as its sender saw it; members abort if it differs,
+or if a reveal does not open its commitment. The keys then follow ZIP 2005
+(`use_qsk = true`).
 
-## 5. Signing session *(to implement)*
+The exchange takes five QR streams, pairing included:
 
-Three sealed messages, under a fresh session id chosen by the co-signer:
+1. pair-init (coordinator);
+2. pair-response (co-signer);
+3. pair-confirm, with the coordinator's round 1 sealed under the pending
+   pairing (it holds no secret);
+4. once the user confirmed the code on the co-signer: its round 1 for members
+   2 and 3, and its round 2 packages for member 1 with `r_2`, `r_3` and `T`;
+5. once confirmed on the coordinator: its round 2 packages for members 2 and 3,
+   with `r_1` and `T`.
+
+The coordinator reveals last, but committed to `r_1` in step 3, before seeing
+any contribution, so no member chooses `sk`. Both devices then show the
+group's address for a last comparison. The co-signer exports member 3 as a
+member backup string (§ 7) and deletes it.
+
+## 5. Signing session
+
+Implemented in `src/cosigning.rs`. Three sealed messages, under a fresh 16-byte
+session id chosen by the co-signer:
 
 1. **sign-commitments**, co-signer → coordinator: one fresh commitment per
    spend it is ready to sign (up to 4). Sent before the co-signer sees the
@@ -147,8 +181,13 @@ Three sealed messages, under a fresh session id chosen by the co-signer:
 3. **sign-reply**, co-signer → coordinator: the co-signer's signature shares,
    or the reason it refuses.
 
-Nonces live in memory only and are used once. An interrupted session starts
-over with new nonces.
+Before asking the user, the co-signer checks the PCZT (§ 6), computes its
+own shares, aggregates them with the coordinator's and verifies each signature
+under the spend's `rk`. Its shares leave the device only if the user approves.
+Nonces live in memory only, and reviewing a request consumes the session, so a
+co-signer answers at most one request per set of nonces; a replayed request
+belongs to an old session and is refused. An interrupted session starts over
+with new nonces.
 
 **Randomizers.** ZIP 312 derives each randomizer from the commitments. The
 Orchard builder does not yet accept a randomizer from the caller
