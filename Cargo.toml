@@ -19,6 +19,7 @@ include = ["/src/**", "/tests/fixtures/**", "/docs/**", "/README.md", "/LICENSE"
 bech32 = "0.11"
 blake2b_simd = "1.0.4"
 blake3 = "1"
+chacha20poly1305 = "0.11.0"
 ff = "0.14"
 frost-rerandomized = "=3.0.0"
 hex = "0.4"
@@ -31,6 +32,8 @@ rand10 = { package = "rand", version = "0.10", default-features = false, feature
 reddsa = { version = "=0.5.2", features = ["frost"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+x-wing = { version = "0.1.1", features = ["zeroize"] }
 zcash_address = "=0.14.0"
 zcash_primitives = { version = "=0.31.0", default-features = false }
 zcash_protocol = "=0.11.0"
+zeroize = "1"

@@ -9,6 +9,7 @@
 //! Status: prototype, not audited. Use small test amounts only.
 
 pub mod backup;
+pub mod channel;
 pub mod check;
 pub mod dkg;
 pub mod interop;
