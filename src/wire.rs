@@ -338,6 +338,15 @@ pub fn encoder(
     ur::Encoder::new(payload, max_fragment_length, UR_TYPE).map_err(malformed)
 }
 
+/// A payload as one UR text (`ur:zcash-frost/...`), for carriers that are not
+/// QR codes: a file, a pasted text. [`Reader`] reads it back.
+pub fn single_part(payload: &[u8]) -> Result<String, WireError> {
+    if payload.len() > MAX_PAYLOAD_SIZE {
+        return Err(WireError::TooLarge);
+    }
+    Ok(ur::encode(payload, &ur::Type::Custom(UR_TYPE)))
+}
+
 /// Reassembles a payload from scanned QR parts, in any order, with repeats.
 #[derive(Default)]
 pub struct Reader {

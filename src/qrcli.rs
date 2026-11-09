@@ -237,7 +237,7 @@ fn rng() -> UnwrapErr<SysRng> {
 /// Writes one QR payload as a single-part UR text file, atomically.
 fn write_file(dir: &Path, name: &str, messages: &[Message]) -> Result<(), Box<dyn Error>> {
     let payload = wire::encode_payload(messages);
-    let text = ur::encode(&payload, &ur::Type::Custom(wire::UR_TYPE));
+    let text = wire::single_part(&payload)?;
     let temporary = dir.join(format!(".{name}.tmp"));
     fs::write(&temporary, text)?;
     fs::rename(&temporary, dir.join(name))?;
