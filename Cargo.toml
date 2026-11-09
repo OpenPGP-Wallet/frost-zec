@@ -51,7 +51,7 @@ rqrr = { version = "0.10.1", optional = true }
 [features]
 default = ["cli"]
 cli = ["dep:qrcode", "dep:crossterm"]
-camera = ["cli", "dep:nokhwa", "dep:rqrr", "dep:image", "qrcode/image"]
+camera = ["dep:nokhwa", "dep:rqrr", "dep:image"]
 
 [[bin]]
 name = "frost-zec"
@@ -59,6 +59,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dev-dependencies]
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
 pczt = { version = "=0.10.0", features = ["io-finalizer", "zcp-builder", "signer"] }
 rand = "0.8"
 zcash_primitives = { version = "=0.31.0", default-features = false, features = ["std"] }

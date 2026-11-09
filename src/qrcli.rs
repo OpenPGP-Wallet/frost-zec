@@ -216,7 +216,13 @@ impl Carrier {
 
 #[cfg(feature = "camera")]
 fn scan(name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    qrview::scan(name)
+    use frost_zec::camera::{self, Progress};
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let payload = camera::scan(&never, |progress| match progress {
+        Progress::Camera(camera) => eprintln!("  reading {name} with {camera} …"),
+        Progress::Fragments(done, total) => eprintln!("  {done} / {total} fragments"),
+    })?;
+    payload.ok_or_else(|| "scan cancelled".into())
 }
 
 #[cfg(not(feature = "camera"))]

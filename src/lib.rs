@@ -9,6 +9,8 @@
 //! Status: prototype, not audited. Use small test amounts only.
 
 pub mod backup;
+#[cfg(feature = "camera")]
+pub mod camera;
 pub mod channel;
 pub mod check;
 pub mod cosigning;
