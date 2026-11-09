@@ -11,15 +11,15 @@ use std::collections::BTreeMap;
 use std::error::Error;
 
 use ff::PrimeField;
-use orchard::keys::SpendValidatingKey;
-use orchard::primitives::redpallas::{self, SpendAuth};
-use pasta_curves::pallas;
-use reddsa::frost::redpallas as frost;
 use frost::keys::{KeyPackage, PublicKeyPackage};
 use frost::rerandomized::{RandomizedParams, Randomizer};
 use frost::round1::{SigningCommitments, SigningNonces};
 use frost::round2::SignatureShare;
 use frost::{Identifier, PallasBlake2b512, SigningPackage};
+use orchard::keys::SpendValidatingKey;
+use orchard::primitives::redpallas::{self, SpendAuth};
+use pasta_curves::pallas;
+use reddsa::frost::redpallas as frost;
 
 /// The FROST group key as an Orchard spend validating key `ak` (32 bytes, even y).
 pub fn group_ak(public_key_package: &PublicKeyPackage) -> Result<[u8; 32], Box<dyn Error>> {
@@ -55,7 +55,8 @@ pub fn share(
     // which is the "external randomizer" path; frost-rerandomized marks it
     // deprecated in favour of randomizers derived from the commitments.
     #[allow(deprecated)]
-    let share = frost_rerandomized::sign::<PallasBlake2b512>(&package, nonces, key_package, randomizer)?;
+    let share =
+        frost_rerandomized::sign::<PallasBlake2b512>(&package, nonces, key_package, randomizer)?;
     Ok(share)
 }
 
@@ -68,9 +69,15 @@ pub fn aggregate(
     public_key_package: &PublicKeyPackage,
 ) -> Result<[u8; 64], Box<dyn Error>> {
     let package = SigningPackage::new(commitments.clone(), sighash);
-    let params = RandomizedParams::from_randomizer(public_key_package.verifying_key(), Randomizer::deserialize(alpha)?);
+    let params = RandomizedParams::from_randomizer(
+        public_key_package.verifying_key(),
+        Randomizer::deserialize(alpha)?,
+    );
     let signature = frost::rerandomized::aggregate(&package, shares, public_key_package, &params)?;
-    let bytes: [u8; 64] = signature.serialize()?.try_into().map_err(|_| "unexpected signature length")?;
+    let bytes: [u8; 64] = signature
+        .serialize()?
+        .try_into()
+        .map_err(|_| "unexpected signature length")?;
     verify(&group_ak(public_key_package)?, alpha, sighash, &bytes)?;
     Ok(bytes)
 }
@@ -91,18 +98,30 @@ pub fn sign(
     }
     let mut shares = BTreeMap::new();
     for (id, key_package) in signers {
-        shares.insert(*id, share(sighash, alpha, &commitments, &nonces[id], key_package)?);
+        shares.insert(
+            *id,
+            share(sighash, alpha, &commitments, &nonces[id], key_package)?,
+        );
     }
     aggregate(sighash, alpha, &commitments, &shares, public_key_package)
 }
 
 /// Checks a signature the way consensus does: RedPallas under rk = ak + [alpha]G.
-pub fn verify(ak: &[u8; 32], alpha: &[u8; 32], sighash: &[u8; 32], signature: &[u8; 64]) -> Result<(), Box<dyn Error>> {
+pub fn verify(
+    ak: &[u8; 32],
+    alpha: &[u8; 32],
+    sighash: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<(), Box<dyn Error>> {
     let ak = SpendValidatingKey::from_bytes(ak).ok_or("invalid ak")?;
-    let alpha = Option::<pallas::Scalar>::from(pallas::Scalar::from_repr(*alpha)).ok_or("invalid randomizer")?;
+    let alpha = Option::<pallas::Scalar>::from(pallas::Scalar::from_repr(*alpha))
+        .ok_or("invalid randomizer")?;
     let rk = ak.randomize(&alpha);
-    rk.verify(sighash, &redpallas::Signature::<SpendAuth>::from(*signature))
-        .map_err(|_| "the aggregated signature does not verify under rk".into())
+    rk.verify(
+        sighash,
+        &redpallas::Signature::<SpendAuth>::from(*signature),
+    )
+    .map_err(|_| "the aggregated signature does not verify under rk".into())
 }
 
 /// A random valid randomizer, for the self-test.

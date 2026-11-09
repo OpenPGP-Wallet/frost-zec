@@ -9,8 +9,8 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use reddsa::frost::redpallas::keys::{KeyPackage, PublicKeyPackage};
 use reddsa::frost::redpallas::Identifier;
+use reddsa::frost::redpallas::keys::{KeyPackage, PublicKeyPackage};
 use serde::{Deserialize, Serialize};
 
 const DIR: &str = "data";
@@ -48,27 +48,41 @@ pub fn save(
     fs::create_dir_all(DIR)?;
     for (position, key_package) in key_packages.values().enumerate() {
         let index = u16::try_from(position + 1)?;
-        fs::write(participant_file(index), hex::encode(key_package.serialize()?))?;
+        fs::write(
+            participant_file(index),
+            hex::encode(key_package.serialize()?),
+        )?;
     }
-    fs::write(Path::new(DIR).join(PUBLIC_FILE), hex::encode(public_key_package.serialize()?))?;
-    fs::write(Path::new(DIR).join(GROUP_FILE), serde_json::to_vec_pretty(group)?)?;
+    fs::write(
+        Path::new(DIR).join(PUBLIC_FILE),
+        hex::encode(public_key_package.serialize()?),
+    )?;
+    fs::write(
+        Path::new(DIR).join(GROUP_FILE),
+        serde_json::to_vec_pretty(group)?,
+    )?;
     Ok(())
 }
 
 /// Writes one participant's key package, e.g. after a restore from its backup.
 pub fn save_participant(index: u16, key_package: &KeyPackage) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(DIR)?;
-    fs::write(participant_file(index), hex::encode(key_package.serialize()?))?;
+    fs::write(
+        participant_file(index),
+        hex::encode(key_package.serialize()?),
+    )?;
     Ok(())
 }
 
 pub fn load_group() -> Result<Group, Box<dyn Error>> {
-    let bytes = fs::read(Path::new(DIR).join(GROUP_FILE)).map_err(|_| "no keys yet: run `keygen` first")?;
+    let bytes =
+        fs::read(Path::new(DIR).join(GROUP_FILE)).map_err(|_| "no keys yet: run `keygen` first")?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 
 pub fn load_public() -> Result<PublicKeyPackage, Box<dyn Error>> {
-    let text = fs::read_to_string(Path::new(DIR).join(PUBLIC_FILE)).map_err(|_| "no keys yet: run `keygen` first")?;
+    let text = fs::read_to_string(Path::new(DIR).join(PUBLIC_FILE))
+        .map_err(|_| "no keys yet: run `keygen` first")?;
     Ok(PublicKeyPackage::deserialize(&hex::decode(text.trim())?)?)
 }
 
@@ -76,7 +90,8 @@ pub fn load_public() -> Result<PublicKeyPackage, Box<dyn Error>> {
 pub fn load_signers(indices: &[u16]) -> Result<BTreeMap<Identifier, KeyPackage>, Box<dyn Error>> {
     let mut signers = BTreeMap::new();
     for &index in indices {
-        let text = fs::read_to_string(participant_file(index)).map_err(|_| format!("no key file for participant {index}"))?;
+        let text = fs::read_to_string(participant_file(index))
+            .map_err(|_| format!("no key file for participant {index}"))?;
         let key_package = KeyPackage::deserialize(&hex::decode(text.trim())?)?;
         signers.insert(*key_package.identifier(), key_package);
     }

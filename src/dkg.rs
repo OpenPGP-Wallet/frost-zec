@@ -8,10 +8,10 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 
-use reddsa::frost::redpallas as frost;
+use frost::Identifier;
 use frost::keys::dkg;
 use frost::keys::{EvenY, KeyPackage, PublicKeyPackage};
-use frost::Identifier;
+use reddsa::frost::redpallas as frost;
 
 /// Runs the three DKG steps for participants 1..=max_signers and returns each
 /// participant's key package plus the shared public key package.
@@ -45,7 +45,10 @@ pub fn run(
         let (round2_secret, outgoing) = dkg::part2(secret, &received)?;
         round2_secrets.insert(id, round2_secret);
         for (recipient, package) in outgoing {
-            round2_inboxes.entry(recipient).or_default().insert(id, package);
+            round2_inboxes
+                .entry(recipient)
+                .or_default()
+                .insert(id, package);
         }
     }
 

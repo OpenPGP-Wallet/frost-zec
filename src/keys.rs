@@ -67,7 +67,11 @@ pub fn contributory_sk(contributions: &[[u8; 32]]) -> [u8; 32] {
     for contribution in contributions {
         state.update(contribution);
     }
-    state.finalize().as_bytes().try_into().expect("32-byte hash")
+    state
+        .finalize()
+        .as_bytes()
+        .try_into()
+        .expect("32-byte hash")
 }
 
 /// Derives the group's keys from `sk` and the FROST group key `ak`.
@@ -76,7 +80,11 @@ pub fn derive(sk: &[u8; 32], ak: &[u8; 32]) -> Result<GroupKeys, Box<dyn Error>>
     let qsk: [u8; 32] = prf_expand(sk, &[&[0x0c]])[..32].try_into()?;
     let qk = blake3::derive_key(QK_CONTEXT, &qsk);
     let rivk = to_scalar(&prf_expand(&qk, &[&[0x0d], ak, &nk])).to_repr();
-    Ok(GroupKeys { fvk: full_viewing_key(ak, &nk, &rivk)?, qk, qsk })
+    Ok(GroupKeys {
+        fvk: full_viewing_key(ak, &nk, &rivk)?,
+        qk,
+        qsk,
+    })
 }
 
 /// The legacy derivation of groups Zkool made before it supported ZIP 2005:
@@ -89,18 +97,26 @@ pub fn derive_legacy(sk: &[u8; 32], ak: &[u8; 32]) -> Result<FullViewingKey, Box
     full_viewing_key(ak, &nk, &rivk)
 }
 
-fn full_viewing_key(ak: &[u8; 32], nk: &[u8; 32], rivk: &[u8; 32]) -> Result<FullViewingKey, Box<dyn Error>> {
+fn full_viewing_key(
+    ak: &[u8; 32],
+    nk: &[u8; 32],
+    rivk: &[u8; 32],
+) -> Result<FullViewingKey, Box<dyn Error>> {
     let mut bytes = [0u8; 96];
     bytes[..32].copy_from_slice(ak);
     bytes[32..64].copy_from_slice(nk);
     bytes[64..].copy_from_slice(rivk);
-    Ok(FullViewingKey::from_bytes(&bytes).ok_or("these keys do not form a valid full viewing key")?)
+    Ok(FullViewingKey::from_bytes(&bytes)
+        .ok_or("these keys do not form a valid full viewing key")?)
 }
 
 /// The unified full viewing key, with its Orchard component only (Ironwood
 /// uses the same Orchard-protocol keys).
 pub fn ufvk(fvk: &FullViewingKey, network: NetworkType) -> Result<String, Box<dyn Error>> {
-    let ufvk = unified::Ufvk::try_from_items(unified::Revision::R0, vec![unified::Uitem::Data(unified::Fvk::Orchard(fvk.to_bytes()))])?;
+    let ufvk = unified::Ufvk::try_from_items(
+        unified::Revision::R0,
+        vec![unified::Uitem::Data(unified::Fvk::Orchard(fvk.to_bytes()))],
+    )?;
     Ok(ufvk.encode(&network))
 }
 
@@ -109,7 +125,8 @@ pub fn parse_ufvk(text: &str) -> Result<(NetworkType, FullViewingKey), Box<dyn E
     let (network, _, ufvk) = unified::Ufvk::decode(text.trim())?;
     for item in ufvk.items() {
         if let unified::Fvk::Orchard(bytes) = item {
-            let fvk = FullViewingKey::from_bytes(&bytes).ok_or("invalid Orchard full viewing key")?;
+            let fvk =
+                FullViewingKey::from_bytes(&bytes).ok_or("invalid Orchard full viewing key")?;
             return Ok((network, fvk));
         }
     }
@@ -121,8 +138,16 @@ pub fn address(fvk: &FullViewingKey, network: NetworkType) -> Result<String, Box
     encode_address(&fvk.address_at(0u32, Scope::External), network)
 }
 
-pub fn encode_address(address: &orchard::Address, network: NetworkType) -> Result<String, Box<dyn Error>> {
-    let ua = unified::Address::try_from_items(unified::Revision::R0, vec![unified::Uitem::Data(unified::Receiver::Orchard(address.to_raw_address_bytes()))])?;
+pub fn encode_address(
+    address: &orchard::Address,
+    network: NetworkType,
+) -> Result<String, Box<dyn Error>> {
+    let ua = unified::Address::try_from_items(
+        unified::Revision::R0,
+        vec![unified::Uitem::Data(unified::Receiver::Orchard(
+            address.to_raw_address_bytes(),
+        ))],
+    )?;
     Ok(ua.encode(&network))
 }
 
@@ -149,22 +174,31 @@ mod tests {
         let sk = official_sk();
         let nk = to_base(&prf_expand(&sk, &[&[0x07]])).to_repr();
         let rivk = to_scalar(&prf_expand(&sk, &[&[0x08]])).to_repr();
-        assert_eq!(nk, reversed("1bfdfe68a9de398c948355ff610cc246c267c3b00df7471fd05a943867822f9f"));
-        assert_eq!(rivk, reversed("3de4a771cab4568b45e6fe25e3fb19b80889332db334e0c67c5f4f6089cf1c02"));
+        assert_eq!(
+            nk,
+            reversed("1bfdfe68a9de398c948355ff610cc246c267c3b00df7471fd05a943867822f9f")
+        );
+        assert_eq!(
+            rivk,
+            reversed("3de4a771cab4568b45e6fe25e3fb19b80889332db334e0c67c5f4f6089cf1c02")
+        );
     }
 
     /// The same primitives against orchard's own legacy derivation.
     #[test]
     fn primitives_match_orchard() {
         let sk = official_sk();
-        let fvk = FullViewingKey::from(&orchard::keys::SpendingKey::from_bytes(sk).unwrap()).to_bytes();
+        let fvk =
+            FullViewingKey::from(&orchard::keys::SpendingKey::from_bytes(sk).unwrap()).to_bytes();
         assert_eq!(fvk[32..64], to_base(&prf_expand(&sk, &[&[0x07]])).to_repr());
         assert_eq!(fvk[64..], to_scalar(&prf_expand(&sk, &[&[0x08]])).to_repr());
     }
 
     #[test]
     fn use_qsk_keys_form_a_valid_viewing_key() {
-        let legacy = FullViewingKey::from(&orchard::keys::SpendingKey::from_bytes(official_sk()).unwrap()).to_bytes();
+        let legacy =
+            FullViewingKey::from(&orchard::keys::SpendingKey::from_bytes(official_sk()).unwrap())
+                .to_bytes();
         let ak: [u8; 32] = legacy[..32].try_into().unwrap();
         let keys = derive(&[7; 32], &ak).unwrap();
         assert_eq!(&keys.fvk.to_bytes()[..32], &ak);
@@ -192,7 +226,10 @@ mod independent_vectors {
     const VECTORS: &str = include_str!("../tests/fixtures/zip2005_use_qsk.json");
 
     fn field(vector: &Value, name: &str) -> String {
-        vector[name].as_str().unwrap_or_else(|| panic!("missing {name}")).to_string()
+        vector[name]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing {name}"))
+            .to_string()
     }
 
     #[test]
@@ -201,8 +238,14 @@ mod independent_vectors {
         let list = vectors["vectors"].as_array().unwrap();
         assert!(!list.is_empty());
         for vector in list {
-            let sk: [u8; 32] = hex::decode(field(vector, "sk")).unwrap().try_into().unwrap();
-            let ak: [u8; 32] = hex::decode(field(vector, "ak")).unwrap().try_into().unwrap();
+            let sk: [u8; 32] = hex::decode(field(vector, "sk"))
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let ak: [u8; 32] = hex::decode(field(vector, "ak"))
+                .unwrap()
+                .try_into()
+                .unwrap();
             let keys = derive(&sk, &ak).unwrap();
             let fvk = keys.fvk.to_bytes();
             assert_eq!(hex::encode(keys.qsk), field(vector, "qsk"));
@@ -210,9 +253,15 @@ mod independent_vectors {
             assert_eq!(hex::encode(&fvk[32..64]), field(vector, "nk"));
             assert_eq!(hex::encode(&fvk[64..]), field(vector, "rivk_ext"));
             assert_eq!(hex::encode(fvk), field(vector, "fvk"));
-            let address = keys.fvk.address_at(0u32, Scope::External).to_raw_address_bytes();
+            let address = keys
+                .fvk
+                .address_at(0u32, Scope::External)
+                .to_raw_address_bytes();
             assert_eq!(hex::encode(address), field(vector, "default_address_raw"));
-            assert_eq!(ufvk(&keys.fvk, NetworkType::Test).unwrap(), field(vector, "ufvk_testnet"));
+            assert_eq!(
+                ufvk(&keys.fvk, NetworkType::Test).unwrap(),
+                field(vector, "ufvk_testnet")
+            );
         }
     }
 }

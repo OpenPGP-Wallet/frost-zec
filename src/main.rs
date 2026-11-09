@@ -42,12 +42,12 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use orchard::keys::FullViewingKey;
-use reddsa::frost::redpallas as frost;
+use frost::Identifier;
 use frost::keys::{KeyPackage, PublicKeyPackage};
 use frost::round1::SigningCommitments;
 use frost::round2::SignatureShare;
-use frost::Identifier;
+use orchard::keys::FullViewingKey;
+use reddsa::frost::redpallas as frost;
 use zcash_protocol::consensus::NetworkType;
 
 const MAX_SIGNERS: u16 = 3;
@@ -72,11 +72,19 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("sign") => sign(&args[1..]),
         Some("coordinate") => coordinate(&args[1..]),
         Some("cosign") => cosign(&args[1..]),
-        Some("interop") if args.get(1).map(String::as_str) == Some("dkg") => interop_dkg(&args[2..]),
-        Some("backup") if args.get(1).map(String::as_str) == Some("export") => backup_export(&args[2..]),
-        Some("backup") if args.get(1).map(String::as_str) == Some("restore") => backup_restore(&args[2..]),
+        Some("interop") if args.get(1).map(String::as_str) == Some("dkg") => {
+            interop_dkg(&args[2..])
+        }
+        Some("backup") if args.get(1).map(String::as_str) == Some("export") => {
+            backup_export(&args[2..])
+        }
+        Some("backup") if args.get(1).map(String::as_str) == Some("restore") => {
+            backup_restore(&args[2..])
+        }
         _ => {
-            eprintln!("usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg | backup export | backup restore> [options]\nsee the comment at the top of src/main.rs for the options");
+            eprintln!(
+                "usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg | backup export | backup restore> [options]\nsee the comment at the top of src/main.rs for the options"
+            );
             Ok(())
         }
     }
@@ -89,20 +97,36 @@ fn selftest() -> Result<(), Box<dyn Error>> {
     let ak = signing::group_ak(&public_key_package)?;
     let sk = keys::contributory_sk(&[rand::random(), rand::random(), rand::random()]);
     let group = keys::derive(&sk, &ak)?;
-    println!("group address (testnet): {}", keys::address(&group.fvk, NetworkType::Test)?);
+    println!(
+        "group address (testnet): {}",
+        keys::address(&group.fvk, NetworkType::Test)?
+    );
 
     let ids: Vec<_> = key_packages.keys().copied().collect();
     let sighash: [u8; 32] = rand::random();
     for (i, a) in ids.iter().enumerate() {
         for (j, b) in ids.iter().enumerate().skip(i + 1) {
             let alpha = signing::random_alpha();
-            let pair = [(*a, key_packages[a].clone()), (*b, key_packages[b].clone())].into_iter().collect();
+            let pair = [(*a, key_packages[a].clone()), (*b, key_packages[b].clone())]
+                .into_iter()
+                .collect();
             signing::sign(&sighash, &alpha, &pair, &public_key_package)?;
-            println!("participants {} + {}: valid RedPallas spend signature under a fresh rk", i + 1, j + 1);
+            println!(
+                "participants {} + {}: valid RedPallas spend signature under a fresh rk",
+                i + 1,
+                j + 1
+            );
         }
     }
-    let single = [(ids[0], key_packages[&ids[0]].clone())].into_iter().collect();
-    match signing::sign(&sighash, &signing::random_alpha(), &single, &public_key_package) {
+    let single = [(ids[0], key_packages[&ids[0]].clone())]
+        .into_iter()
+        .collect();
+    match signing::sign(
+        &sighash,
+        &signing::random_alpha(),
+        &single,
+        &public_key_package,
+    ) {
         Err(_) => println!("one participant alone: refused, as expected"),
         Ok(_) => return Err("a single participant produced a valid signature".into()),
     }
@@ -111,7 +135,9 @@ fn selftest() -> Result<(), Box<dyn Error>> {
 
 fn keygen(args: &[String]) -> Result<(), Box<dyn Error>> {
     if store::exists() && !flag(args, "--force") {
-        return Err("keys already exist in data/ (they may hold funds); use --force to replace them".into());
+        return Err(
+            "keys already exist in data/ (they may hold funds); use --force to replace them".into(),
+        );
     }
     let network_name = option(args, "--network").unwrap_or("test");
     let network = interop::network_type(network_name)?;
@@ -131,7 +157,9 @@ fn keygen(args: &[String]) -> Result<(), Box<dyn Error>> {
         address: keys::address(&group_keys.fvk, network)?,
     };
     store::save(&key_packages, &public_key_package, &group)?;
-    println!("DKG done: {MAX_SIGNERS} participants, threshold {MIN_SIGNERS}. Shares saved in data/.");
+    println!(
+        "DKG done: {MAX_SIGNERS} participants, threshold {MIN_SIGNERS}. Shares saved in data/."
+    );
     print_group(&group);
     Ok(())
 }
@@ -217,7 +245,11 @@ impl Seat {
 
 fn check_kind(format: &str, kind: &str, expected: &str) -> Result<(), Box<dyn Error>> {
     if format != interop::FORMAT || kind != expected {
-        return Err(format!("expected a `{expected}` message ({}), got `{kind}` ({format})", interop::FORMAT).into());
+        return Err(format!(
+            "expected a `{expected}` message ({}), got `{kind}` ({format})",
+            interop::FORMAT
+        )
+        .into());
     }
     Ok(())
 }
@@ -230,7 +262,10 @@ fn inspect(args: &[String]) -> Result<(), Box<dyn Error>> {
     let report = check::analyze(&pczt, &seat.fvk, seat.network)?;
     print_report("this group", &report);
     println!("  sighash {}", hex::encode(pczt_io::sighash(&pczt)?));
-    println!("  {} spend(s) waiting for a signature", pczt_io::spends_to_sign(&pczt)?.len());
+    println!(
+        "  {} spend(s) waiting for a signature",
+        pczt_io::spends_to_sign(&pczt)?.len()
+    );
     Ok(())
 }
 
@@ -238,7 +273,11 @@ fn inspect(args: &[String]) -> Result<(), Box<dyn Error>> {
 fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let input = option(args, "--pczt").ok_or("--pczt IN is required")?;
     let output = option(args, "--out").ok_or("--out OUT is required")?;
-    let signer_indices: Vec<u16> = option(args, "--signers").unwrap_or("1,3").split(',').map(|s| s.trim().parse()).collect::<Result<_, _>>()?;
+    let signer_indices: Vec<u16> = option(args, "--signers")
+        .unwrap_or("1,3")
+        .split(',')
+        .map(|s| s.trim().parse())
+        .collect::<Result<_, _>>()?;
     let group = store::load_group()?;
     let fvk = group_fvk(&group)?;
     let public_key_package = store::load_public()?;
@@ -251,11 +290,17 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let signers = store::load_signers(&signer_indices)?;
     let mut signatures = Vec::new();
     for spend in &spends {
-        signatures.push((spend.index, signing::sign(&sighash, &spend.alpha, &signers, &public_key_package)?));
+        signatures.push((
+            spend.index,
+            signing::sign(&sighash, &spend.alpha, &signers, &public_key_package)?,
+        ));
     }
     let signed = pczt_io::apply(pczt, &sighash, &signatures)?;
     fs::write(output, pczt_io::serialize(signed)?)?;
-    println!("{} spend(s) signed by participants {signer_indices:?}; each signature verified under its rk. Written to {output}.", spends.len());
+    println!(
+        "{} spend(s) signed by participants {signer_indices:?}; each signature verified under its rk. Written to {output}.",
+        spends.len()
+    );
     Ok(())
 }
 
@@ -277,14 +322,22 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
     let sighash = pczt_io::sighash(&pczt)?;
     let spends = pczt_io::spends_to_sign(&pczt)?;
     if spends.len() > MAX_SPENDS {
-        return Err(format!("{} spends; one session covers at most {MAX_SPENDS}", spends.len()).into());
+        return Err(format!(
+            "{} spends; one session covers at most {MAX_SPENDS}",
+            spends.len()
+        )
+        .into());
     }
     let my_id = seat.id();
 
     // The session files hold the PCZT (amounts, addresses, viewing-key
     // material): they are removed when this function returns, whatever happens.
     let _cleanup = session::Cleanup(&dir);
-    println!("[{}] waiting for the co-signer's commitments in {}...", seat.name, session::path(&dir, session::COMMITMENTS).display());
+    println!(
+        "[{}] waiting for the co-signer's commitments in {}...",
+        seat.name,
+        session::path(&dir, session::COMMITMENTS).display()
+    );
     let theirs: session::Commitments = session::receive(&dir, session::COMMITMENTS)?;
     check_kind(&theirs.format, &theirs.kind, "sign-commitments")?;
     let their_id = seat.other_member(&theirs.identifier)?;
@@ -297,7 +350,13 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut my_commitments = Vec::new();
     for (spend, their_commitment) in spends.iter().zip(&theirs.commitments) {
         let (nonces, my_commitment) = signing::commit(&seat.key_package);
-        let commitments = BTreeMap::from([(my_id, my_commitment), (their_id, SigningCommitments::deserialize(&hex::decode(their_commitment)?)?)]);
+        let commitments = BTreeMap::from([
+            (my_id, my_commitment),
+            (
+                their_id,
+                SigningCommitments::deserialize(&hex::decode(their_commitment)?)?,
+            ),
+        ]);
         my_commitments.push(hex::encode(my_commitment.serialize()?));
         my_nonces.push(nonces);
         packages.push((spend, commitments));
@@ -314,7 +373,11 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
             commitments: my_commitments,
         },
     )?;
-    println!("[{}] request written to {}: send it to the co-signer. Waiting for its reply...", seat.name, session::path(&dir, session::REQUEST).display());
+    println!(
+        "[{}] request written to {}: send it to the co-signer. Waiting for its reply...",
+        seat.name,
+        session::path(&dir, session::REQUEST).display()
+    );
 
     let reply: session::Reply = session::receive(&dir, session::REPLY)?;
     check_kind(&reply.format, &reply.kind, "sign-reply")?;
@@ -330,15 +393,43 @@ fn coordinate(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     let mut signatures = Vec::new();
-    for (((spend, commitments), nonces), their_share) in packages.iter().zip(&my_nonces).zip(&their_shares) {
-        let my_share = signing::share(&sighash, &spend.alpha, commitments, nonces, &seat.key_package)?;
-        let shares = BTreeMap::from([(my_id, my_share), (their_id, SignatureShare::deserialize(&hex::decode(their_share)?)?)]);
-        signatures.push((spend.index, signing::aggregate(&sighash, &spend.alpha, commitments, &shares, &seat.public_key_package)?));
+    for (((spend, commitments), nonces), their_share) in
+        packages.iter().zip(&my_nonces).zip(&their_shares)
+    {
+        let my_share = signing::share(
+            &sighash,
+            &spend.alpha,
+            commitments,
+            nonces,
+            &seat.key_package,
+        )?;
+        let shares = BTreeMap::from([
+            (my_id, my_share),
+            (
+                their_id,
+                SignatureShare::deserialize(&hex::decode(their_share)?)?,
+            ),
+        ]);
+        signatures.push((
+            spend.index,
+            signing::aggregate(
+                &sighash,
+                &spend.alpha,
+                commitments,
+                &shares,
+                &seat.public_key_package,
+            )?,
+        ));
     }
     drop(my_nonces);
     let signed = pczt_io::apply(pczt, &sighash, &signatures)?;
     fs::write(output, pczt_io::serialize(signed)?)?;
-    println!("[{}] {} spend(s) signed with member {}; each signature verified under its rk. Written to {output}.", seat.name, signatures.len(), interop::short(&their_id));
+    println!(
+        "[{}] {} spend(s) signed with member {}; each signature verified under its rk. Written to {output}.",
+        seat.name,
+        signatures.len(),
+        interop::short(&their_id)
+    );
     Ok(())
 }
 
@@ -367,10 +458,17 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
             kind: "sign-commitments".into(),
             session: session_id.clone(),
             identifier: hex::encode(my_id.serialize()),
-            commitments: my_commitments.iter().map(|c| c.serialize().map(hex::encode)).collect::<Result<_, _>>()?,
+            commitments: my_commitments
+                .iter()
+                .map(|c| c.serialize().map(hex::encode))
+                .collect::<Result<_, _>>()?,
         },
     )?;
-    println!("[{}] commitments written to {}: send them to the coordinator. Waiting for its request...", seat.name, session::path(&dir, session::COMMITMENTS).display());
+    println!(
+        "[{}] commitments written to {}: send them to the coordinator. Waiting for its request...",
+        seat.name,
+        session::path(&dir, session::COMMITMENTS).display()
+    );
 
     let request: session::Request = session::receive(&dir, session::REQUEST)?;
     // The request holds the PCZT: it does not stay on disk once read.
@@ -396,7 +494,10 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
         Err(format!("refused: {reason}").into())
     };
 
-    let pczt = match hex::decode(&request.pczt).map_err(Box::<dyn Error>::from).and_then(|bytes| pczt_io::parse(&bytes)) {
+    let pczt = match hex::decode(&request.pczt)
+        .map_err(Box::<dyn Error>::from)
+        .and_then(|bytes| pczt_io::parse(&bytes))
+    {
         Ok(pczt) => pczt,
         Err(e) => return refuse(e.to_string()),
     };
@@ -406,10 +507,11 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     };
     // The sighash and the randomizers come from the PCZT this device checked,
     // never from the coordinator's word.
-    let (sighash, spends) = match pczt_io::sighash(&pczt).and_then(|h| Ok((h, pczt_io::spends_to_sign(&pczt)?))) {
-        Ok(found) => found,
-        Err(e) => return refuse(e.to_string()),
-    };
+    let (sighash, spends) =
+        match pczt_io::sighash(&pczt).and_then(|h| Ok((h, pczt_io::spends_to_sign(&pczt)?))) {
+            Ok(found) => found,
+            Err(e) => return refuse(e.to_string()),
+        };
     if spends.len() > MAX_SPENDS || request.commitments.len() != spends.len() {
         return refuse("the number of spends and commitments do not match".into());
     }
@@ -417,8 +519,14 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let approved = if flag(args, "--yes") {
         // Test mode: skips the human check. Never use it for real funds.
-        println!("[{}] --yes: approving without a human check (test mode)", seat.name);
-        report.warnings.iter().all(|w| w.starts_with("v6 pre-authorization"))
+        println!(
+            "[{}] --yes: approving without a human check (test mode)",
+            seat.name
+        );
+        report
+            .warnings
+            .iter()
+            .all(|w| w.starts_with("v6 pre-authorization"))
     } else {
         print!("[{}] approve and sign? [y/N] ", seat.name);
         io::stdout().flush()?;
@@ -431,9 +539,25 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     let mut shares = Vec::new();
-    for ((spend, their_commitment), (nonces, my_commitment)) in spends.iter().zip(&request.commitments).zip(my_nonces.iter().zip(&my_commitments)) {
-        let commitments = BTreeMap::from([(their_id, SigningCommitments::deserialize(&hex::decode(their_commitment)?)?), (my_id, *my_commitment)]);
-        let share = signing::share(&sighash, &spend.alpha, &commitments, nonces, &seat.key_package)?;
+    for ((spend, their_commitment), (nonces, my_commitment)) in spends
+        .iter()
+        .zip(&request.commitments)
+        .zip(my_nonces.iter().zip(&my_commitments))
+    {
+        let commitments = BTreeMap::from([
+            (
+                their_id,
+                SigningCommitments::deserialize(&hex::decode(their_commitment)?)?,
+            ),
+            (my_id, *my_commitment),
+        ]);
+        let share = signing::share(
+            &sighash,
+            &spend.alpha,
+            &commitments,
+            nonces,
+            &seat.key_package,
+        )?;
         shares.push(hex::encode(share.serialize()));
     }
     drop(my_nonces);
@@ -449,7 +573,11 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
             refused: None,
         },
     )?;
-    println!("[{}] signed the sighash computed on this device; nonces discarded. Reply written to {}: send it to the coordinator.", seat.name, session::path(&dir, session::REPLY).display());
+    println!(
+        "[{}] signed the sighash computed on this device; nonces discarded. Reply written to {}: send it to the coordinator.",
+        seat.name,
+        session::path(&dir, session::REPLY).display()
+    );
     Ok(())
 }
 
@@ -457,13 +585,22 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
 fn interop_dkg(args: &[String]) -> Result<(), Box<dyn Error>> {
     let out = PathBuf::from(option(args, "--out").unwrap_or("vault"));
     if out.join("vault.json").exists() && !flag(args, "--force") {
-        return Err(format!("{} already holds a vault (it may hold funds); use --force to replace it", out.display()).into());
+        return Err(format!(
+            "{} already holds a vault (it may hold funds); use --force to replace it",
+            out.display()
+        )
+        .into());
     }
     let vault_id: [u8; 16] = match option(args, "--vault-id") {
-        Some(text) => hex::decode(text)?.try_into().map_err(|_| "the vault id is 16 bytes (32 hex characters)")?,
+        Some(text) => hex::decode(text)?
+            .try_into()
+            .map_err(|_| "the vault id is 16 bytes (32 hex characters)")?,
         None => {
             let id = rand::random();
-            println!("new vault id {}: give it to the other members, who pass it with --vault-id.", hex::encode(id));
+            println!(
+                "new vault id {}: give it to the other members, who pass it with --vault-id.",
+                hex::encode(id)
+            );
             id
         }
     };
@@ -488,8 +625,14 @@ fn backup_export(args: &[String]) -> Result<(), Box<dyn Error>> {
     let sk: [u8; 32] = hex::decode(sk)?.try_into().map_err(|_| "bad sk")?;
     let n = u16::try_from(seat.public_key_package.verifying_shares().len())?;
     let text = backup::Backup::new(&seat.key_package, n, &sk)?.encode()?;
-    println!("[{}] backup string (secret, keep it offline):\n{text}", seat.name);
-    println!("viewing key (needed to restore): {}", keys::ufvk(&seat.fvk, seat.network)?);
+    println!(
+        "[{}] backup string (secret, keep it offline):\n{text}",
+        seat.name
+    );
+    println!(
+        "viewing key (needed to restore): {}",
+        keys::ufvk(&seat.fvk, seat.network)?
+    );
     Ok(())
 }
 
@@ -497,14 +640,23 @@ fn backup_export(args: &[String]) -> Result<(), Box<dyn Error>> {
 /// which derivation the group follows. With --save, puts the member back into
 /// the group in data/, after checking it is the same group.
 fn backup_restore(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let path = option(args, "--in").ok_or("missing --in FILE (the file holding the backup string)")?;
-    let ufvk = option(args, "--ufvk").ok_or("missing --ufvk KEY (the group's unified full viewing key)")?;
+    let path =
+        option(args, "--in").ok_or("missing --in FILE (the file holding the backup string)")?;
+    let ufvk = option(args, "--ufvk")
+        .ok_or("missing --ufvk KEY (the group's unified full viewing key)")?;
     let restored = backup::restore(&fs::read_to_string(path)?, ufvk)?;
     let b = &restored.backup;
-    println!("member {}, threshold {} of {}, network {:?}", b.id, b.t, b.n, restored.network);
+    println!(
+        "member {}, threshold {} of {}, network {:?}",
+        b.id, b.t, b.n, restored.network
+    );
     match restored.derivation {
-        backup::Derivation::Zip2005 => println!("derivation: ZIP 2005 (use_qsk), notes are quantum recoverable"),
-        backup::Derivation::Legacy => println!("derivation: legacy, WARNING: this group's notes are not quantum recoverable"),
+        backup::Derivation::Zip2005 => {
+            println!("derivation: ZIP 2005 (use_qsk), notes are quantum recoverable")
+        }
+        backup::Derivation::Legacy => {
+            println!("derivation: legacy, WARNING: this group's notes are not quantum recoverable")
+        }
     }
     if flag(args, "--save") {
         let group = store::load_group()?;
@@ -517,7 +669,9 @@ fn backup_restore(args: &[String]) -> Result<(), Box<dyn Error>> {
         store::save_participant(u16::from(b.id), &restored.key_package)?;
         println!("saved as participant {} in data/", b.id);
     } else {
-        println!("not checked: the share, and ak in the viewing key, need the group's public keys (--save, with the group in data/)");
+        println!(
+            "not checked: the share, and ak in the viewing key, need the group's public keys (--save, with the group in data/)"
+        );
     }
     Ok(())
 }
@@ -533,7 +687,10 @@ fn print_report(who: &str, report: &check::Report) {
 }
 
 fn single_key(index: u16) -> Result<KeyPackage, Box<dyn Error>> {
-    store::load_signers(&[index])?.into_values().next().ok_or_else(|| "missing key".into())
+    store::load_signers(&[index])?
+        .into_values()
+        .next()
+        .ok_or_else(|| "missing key".into())
 }
 
 fn flag(args: &[String], name: &str) -> bool {
@@ -541,7 +698,10 @@ fn flag(args: &[String], name: &str) -> bool {
 }
 
 fn option<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
 }
 
 fn number<T: FromStr>(args: &[String], name: &str) -> Result<Option<T>, Box<dyn Error>>

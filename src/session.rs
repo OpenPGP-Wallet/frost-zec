@@ -121,7 +121,11 @@ pub fn wait_json<T: DeserializeOwned>(file: &Path, deadline: Instant) -> Result<
                 Err(error) => match &unparsed {
                     Some((seen, since)) if *seen == bytes => {
                         if since.elapsed() >= SETTLE {
-                            return Err(format!("{} is not a valid message: {error}", file.display()).into());
+                            return Err(format!(
+                                "{} is not a valid message: {error}",
+                                file.display()
+                            )
+                            .into());
                         }
                     }
                     _ => unparsed = Some((bytes, Instant::now())),
@@ -145,7 +149,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("frost-zec-session-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("frost-zec-session-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -169,7 +174,8 @@ mod tests {
                     fs::write(file, complete).unwrap();
                 })
             };
-            let message: Message = wait_json(&file, Instant::now() + Duration::from_secs(10)).unwrap();
+            let message: Message =
+                wait_json(&file, Instant::now() + Duration::from_secs(10)).unwrap();
             assert_eq!(message.kind, "sign-request", "{case}");
             writer.join().unwrap();
             let _ = fs::remove_dir_all(dir);

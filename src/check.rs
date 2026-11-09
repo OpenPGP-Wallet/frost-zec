@@ -12,11 +12,11 @@ use std::error::Error;
 use orchard::keys::{FullViewingKey, Scope};
 use orchard::note::ExtractedNoteCommitment;
 use orchard::{Anchor, Note};
-use pczt::roles::low_level_signer::Signer;
 use pczt::Pczt;
+use pczt::roles::low_level_signer::Signer;
+use zcash_protocol::PoolType;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::constants::V6_TX_VERSION;
-use zcash_protocol::PoolType;
 
 use crate::keys;
 use crate::pczt_io::TxError;
@@ -34,7 +34,11 @@ pub struct Report {
 }
 
 pub fn zec(zatoshis: u64) -> String {
-    format!("{}.{:08} ZEC", zatoshis / 100_000_000, zatoshis % 100_000_000)
+    format!(
+        "{}.{:08} ZEC",
+        zatoshis / 100_000_000,
+        zatoshis % 100_000_000
+    )
 }
 
 /// Adds an amount read from the PCZT to a running total. The amounts come
@@ -101,7 +105,8 @@ fn check_spend_structure(
 fn pre_authorization(expiry_height: u32) -> Result<String, TxError> {
     if expiry_height == 0 {
         return Err(TxError::Refused(
-            "the transaction never expires: a pre-authorized v6 spend would stay valid forever".into(),
+            "the transaction never expires: a pre-authorized v6 spend would stay valid forever"
+                .into(),
         ));
     }
     Ok(format!(
@@ -111,9 +116,15 @@ fn pre_authorization(expiry_height: u32) -> Result<String, TxError> {
 }
 
 /// Verifies and describes a PCZT that spends from the group `fvk`.
-pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Result<Report, Box<dyn Error>> {
+pub fn analyze(
+    pczt: &Pczt,
+    fvk: &FullViewingKey,
+    network: NetworkType,
+) -> Result<Report, Box<dyn Error>> {
     if pczt.has_data_in_pool(PoolType::Transparent) || pczt.has_data_in_pool(PoolType::SAPLING) {
-        return Err("the transaction has transparent or Sapling parts, which this prototype refuses".into());
+        return Err(
+            "the transaction has transparent or Sapling parts, which this prototype refuses".into(),
+        );
     }
 
     let mut lines = Vec::new();
@@ -127,8 +138,12 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
     }
 
     Signer::new(pczt.clone()).sign_ironwood_with(|_, bundle, _| -> Result<(), TxError> {
-        let refuse = |what: &str, error: &dyn std::fmt::Debug| TxError::Refused(format!("{what}: {error:?}"));
-        bundle.verify_cross_address_restriction().map_err(|e| refuse("cross-address check failed", &e))?;
+        let refuse = |what: &str, error: &dyn std::fmt::Debug| {
+            TxError::Refused(format!("{what}: {error:?}"))
+        };
+        bundle
+            .verify_cross_address_restriction()
+            .map_err(|e| refuse("cross-address check failed", &e))?;
         let anchor = *bundle.anchor();
         let anchor_deferred = *bundle.anchor_deferred();
         for (index, action) in bundle.actions().iter().enumerate() {
@@ -137,7 +152,9 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
             check_spend_structure(index, spend, &anchor, anchor_deferred)?;
             // The value commitment only binds this action's net value. The
             // note checks below are what bind the claimed values and recipient.
-            action.verify_cv_net().map_err(|e| refuse(&format!("action {index}: value commitment"), &e))?;
+            action
+                .verify_cv_net()
+                .map_err(|e| refuse(&format!("action {index}: value commitment"), &e))?;
             let spend_value = spend.value().map(|v| v.inner()).unwrap_or_default();
             let output_value = output.value().map(|v| v.inner()).unwrap_or_default();
 
@@ -146,19 +163,29 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
                 // key and was already signed when the PCZT was built. It moves no
                 // value; an unsigned zero-value spend is not expected.
                 if spend.spend_auth_sig().is_none() {
-                    return Err(TxError::Refused(format!("action {index}: unsigned zero-value spend")));
+                    return Err(TxError::Refused(format!(
+                        "action {index}: unsigned zero-value spend"
+                    )));
                 }
             } else {
-                spend.verify_nullifier(Some(fvk)).map_err(|e| refuse(&format!("action {index}: spent note"), &e))?;
-                spend.verify_rk(Some(fvk)).map_err(|e| refuse(&format!("action {index}: randomized key"), &e))?;
+                spend
+                    .verify_nullifier(Some(fvk))
+                    .map_err(|e| refuse(&format!("action {index}: spent note"), &e))?;
+                spend
+                    .verify_rk(Some(fvk))
+                    .map_err(|e| refuse(&format!("action {index}: randomized key"), &e))?;
             }
-            output.verify_note_commitment(spend).map_err(|e| refuse(&format!("action {index}: output note"), &e))?;
+            output
+                .verify_note_commitment(spend)
+                .map_err(|e| refuse(&format!("action {index}: output note"), &e))?;
             add(&mut spent, spend_value)?;
             if spend_value > 0 {
                 lines.push(format!("spend {} from this group", zec(spend_value)));
             }
             if output_value > 0 {
-                let recipient = output.recipient().ok_or_else(|| TxError::Refused(format!("action {index}: output without recipient")))?;
+                let recipient = output.recipient().ok_or_else(|| {
+                    TxError::Refused(format!("action {index}: output without recipient"))
+                })?;
                 match fvk.scope_for_address(&recipient) {
                     Some(Scope::Internal) => {
                         add(&mut change, output_value)?;
@@ -166,11 +193,15 @@ pub fn analyze(pczt: &Pczt, fvk: &FullViewingKey, network: NetworkType) -> Resul
                     }
                     Some(Scope::External) => {
                         add(&mut change, output_value)?;
-                        lines.push(format!("send {} to this group's own address", zec(output_value)));
+                        lines.push(format!(
+                            "send {} to this group's own address",
+                            zec(output_value)
+                        ));
                     }
                     None => {
                         add(&mut paid, output_value)?;
-                        let address = keys::encode_address(&recipient, network).map_err(|e| TxError::Refused(e.to_string()))?;
+                        let address = keys::encode_address(&recipient, network)
+                            .map_err(|e| TxError::Refused(e.to_string()))?;
                         lines.push(format!("PAY {} to {address}", zec(output_value)));
                     }
                 }
@@ -203,7 +234,10 @@ mod tests {
         let mut total = MAX_MONEY - 1;
         assert!(add(&mut total, 1).is_ok());
         assert!(add(&mut total, 1).is_err());
-        assert_eq!(total, MAX_MONEY, "a refused amount leaves the total unchanged");
+        assert_eq!(
+            total, MAX_MONEY,
+            "a refused amount leaves the total unchanged"
+        );
         let mut total = 1;
         assert!(add(&mut total, u64::MAX).is_err());
     }
@@ -219,20 +253,42 @@ mod tests {
 
         let sk = SpendingKey::from_bytes([7; 32]).unwrap();
         let recipient = FullViewingKey::from(&sk).address_at(0u32, Scope::External);
-        let mut builder = Builder::new(BundleType::DEFAULT, BundleVersion::ironwood_v3(), Flags::ENABLED, Anchor::empty_tree()).unwrap();
-        builder.add_output(None, recipient, NoteValue::from_raw(10_000), [0; 512]).unwrap();
-        let (bundle, _) = builder.build_for_pczt(rand10::rand_core::UnwrapErr(rand10::rngs::SysRng)).unwrap();
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            BundleVersion::ironwood_v3(),
+            Flags::ENABLED,
+            Anchor::empty_tree(),
+        )
+        .unwrap();
+        builder
+            .add_output(None, recipient, NoteValue::from_raw(10_000), [0; 512])
+            .unwrap();
+        let (bundle, _) = builder
+            .build_for_pczt(rand10::rand_core::UnwrapErr(rand10::rngs::SysRng))
+            .unwrap();
 
         let refused: Vec<_> = bundle
             .actions()
             .iter()
             .enumerate()
             .filter(|(_, action)| action.spend().dummy_sk().is_some())
-            .map(|(index, action)| check_spend_structure(index, action.spend(), bundle.anchor(), *bundle.anchor_deferred()))
+            .map(|(index, action)| {
+                check_spend_structure(
+                    index,
+                    action.spend(),
+                    bundle.anchor(),
+                    *bundle.anchor_deferred(),
+                )
+            })
             .collect();
-        assert!(!refused.is_empty(), "the builder left no dummy key to test with");
+        assert!(
+            !refused.is_empty(),
+            "the builder left no dummy key to test with"
+        );
         for result in refused {
-            assert!(matches!(result, Err(TxError::Refused(reason)) if reason.contains("dummy spending key")));
+            assert!(
+                matches!(result, Err(TxError::Refused(reason)) if reason.contains("dummy spending key"))
+            );
         }
     }
 
@@ -240,27 +296,45 @@ mod tests {
     /// checked against another anchor is refused.
     #[test]
     fn a_witness_must_lead_to_the_anchor() {
+        use orchard::NoteVersion;
         use orchard::builder::{Builder, BundleType};
         use orchard::bundle::{BundleVersion, Flags};
         use orchard::keys::SpendingKey;
         use orchard::note::{RandomSeed, Rho};
         use orchard::tree::{MerkleHashOrchard, MerklePath};
         use orchard::value::NoteValue;
-        use orchard::NoteVersion;
 
         let sk = SpendingKey::from_bytes([7; 32]).unwrap();
         let fvk = FullViewingKey::from(&sk);
         let recipient = fvk.address_at(0u32, Scope::External);
         let rho = Rho::from_bytes(&[1; 32]).unwrap();
         let rseed = RandomSeed::from_bytes([2; 32], &rho).unwrap();
-        let note = Note::from_parts(recipient, NoteValue::from_raw(50_000), rho, rseed, NoteVersion::V3).unwrap();
-        let path = MerklePath::from_parts(5, [MerkleHashOrchard::from_bytes(&[0; 32]).unwrap(); 32]);
+        let note = Note::from_parts(
+            recipient,
+            NoteValue::from_raw(50_000),
+            rho,
+            rseed,
+            NoteVersion::V3,
+        )
+        .unwrap();
+        let path =
+            MerklePath::from_parts(5, [MerkleHashOrchard::from_bytes(&[0; 32]).unwrap(); 32]);
         let anchor = path.root(ExtractedNoteCommitment::from(note.commitment()));
 
-        let mut builder = Builder::new(BundleType::DEFAULT, BundleVersion::ironwood_v3(), Flags::ENABLED, anchor).unwrap();
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            BundleVersion::ironwood_v3(),
+            Flags::ENABLED,
+            anchor,
+        )
+        .unwrap();
         builder.add_spend(fvk, note, path).unwrap();
-        builder.add_output(None, recipient, NoteValue::from_raw(40_000), [0; 512]).unwrap();
-        let (bundle, _) = builder.build_for_pczt(rand10::rand_core::UnwrapErr(rand10::rngs::SysRng)).unwrap();
+        builder
+            .add_output(None, recipient, NoteValue::from_raw(40_000), [0; 512])
+            .unwrap();
+        let (bundle, _) = builder
+            .build_for_pczt(rand10::rand_core::UnwrapErr(rand10::rngs::SysRng))
+            .unwrap();
         let (index, action) = bundle
             .actions()
             .iter()
@@ -279,18 +353,28 @@ mod tests {
     /// and gets the pre-authorization warning with its expiry height.
     #[test]
     fn the_finalized_testnet_pczt_passes_and_is_marked_as_pre_authorization() {
-        let pczt = crate::pczt_io::parse(include_bytes!("../tests/fixtures/ironwood_v6.pczt")).unwrap();
+        let pczt =
+            crate::pczt_io::parse(include_bytes!("../tests/fixtures/ironwood_v6.pczt")).unwrap();
         assert_eq!(*pczt.global().tx_version(), V6_TX_VERSION);
         Signer::new(pczt.clone())
             .sign_ironwood_with(|_, bundle, _| -> Result<(), TxError> {
                 for (index, action) in bundle.actions().iter().enumerate() {
-                    check_spend_structure(index, action.spend(), bundle.anchor(), *bundle.anchor_deferred())?;
+                    check_spend_structure(
+                        index,
+                        action.spend(),
+                        bundle.anchor(),
+                        *bundle.anchor_deferred(),
+                    )?;
                 }
                 Ok(())
             })
             .unwrap();
         let expiry = *pczt.global().expiry_height();
-        assert!(pre_authorization(expiry).unwrap().contains(&format!("until block {expiry}")));
+        assert!(
+            pre_authorization(expiry)
+                .unwrap()
+                .contains(&format!("until block {expiry}"))
+        );
         assert!(pre_authorization(0).is_err());
     }
 }

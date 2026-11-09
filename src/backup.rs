@@ -14,10 +14,10 @@
 use std::error::Error;
 
 use bech32::{Bech32m, Hrp, primitives::decode::CheckedHrpstring};
-use orchard::keys::{FullViewingKey, SpendingKey};
-use reddsa::frost::redpallas as frost;
 use frost::keys::{KeyPackage, PublicKeyPackage, SigningShare, VerifyingShare};
 use frost::{Identifier, VerifyingKey};
+use orchard::keys::{FullViewingKey, SpendingKey};
+use reddsa::frost::redpallas as frost;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::keys;
@@ -52,8 +52,18 @@ impl Backup {
             "this member's identifier is not an integer from 1 to 255, which version 1 cannot hold \
              (see the open points in docs/backup-format.md)",
         )?;
-        let share: [u8; 32] = key_package.signing_share().serialize().try_into().map_err(|_| "signing share is not 32 bytes")?;
-        Ok(Backup { id, t: u8::try_from(*key_package.min_signers())?, n: u8::try_from(n)?, share, sk: *sk })
+        let share: [u8; 32] = key_package
+            .signing_share()
+            .serialize()
+            .try_into()
+            .map_err(|_| "signing share is not 32 bytes")?;
+        Ok(Backup {
+            id,
+            t: u8::try_from(*key_package.min_signers())?,
+            n: u8::try_from(n)?,
+            share,
+            sk: *sk,
+        })
     }
 
     pub fn encode(&self) -> Result<String, Box<dyn Error>> {
@@ -69,27 +79,44 @@ impl Backup {
     /// length, an unknown version, an identifier outside 1..=n, or a threshold
     /// outside 2..=n (FROST needs at least two signers).
     pub fn decode(text: &str) -> Result<Backup, Box<dyn Error>> {
-        let checked = CheckedHrpstring::new::<Bech32m>(text.trim()).map_err(|e| format!("not a valid backup string: {e}"))?;
+        let checked = CheckedHrpstring::new::<Bech32m>(text.trim())
+            .map_err(|e| format!("not a valid backup string: {e}"))?;
         if checked.hrp().to_lowercase() != HRP {
             return Err("not a FROST member backup string".into());
         }
         // ZIP 173: the bits left over by the conversion to bytes must be at
         // most 4 and all zero, so each payload has only one lowercase string.
-        checked.validate_segwit_padding().map_err(|e| format!("not a valid backup string: {e}"))?;
+        checked
+            .validate_segwit_padding()
+            .map_err(|e| format!("not a valid backup string: {e}"))?;
         let payload: Vec<u8> = checked.byte_iter().collect();
         // The version first, so that a later version is reported as such
         // rather than as a string of the wrong length.
         if payload.first() != Some(&VERSION) {
-            return Err(format!("backup string version {:?} is not supported", payload.first()).into());
+            return Err(format!(
+                "backup string version {:?} is not supported",
+                payload.first()
+            )
+            .into());
         }
         if payload.len() != PAYLOAD_LEN {
-            return Err(format!("the backup string holds {} bytes instead of {PAYLOAD_LEN}", payload.len()).into());
+            return Err(format!(
+                "the backup string holds {} bytes instead of {PAYLOAD_LEN}",
+                payload.len()
+            )
+            .into());
         }
         let (id, t, n) = (payload[1], payload[2], payload[3]);
         if n == 0 || id == 0 || id > n || t < 2 || t > n {
             return Err(format!("invalid backup string: member {id}, threshold {t} of {n}").into());
         }
-        Ok(Backup { id, t, n, share: payload[4..36].try_into()?, sk: payload[36..].try_into()? })
+        Ok(Backup {
+            id,
+            t,
+            n,
+            share: payload[4..36].try_into()?,
+            sk: payload[36..].try_into()?,
+        })
     }
 }
 
@@ -107,8 +134,8 @@ pub fn restore(text: &str, ufvk: &str) -> Result<Restored, Box<dyn Error>> {
     if bool::from(SpendingKey::from_bytes(backup.sk).is_none()) {
         return Err("the backup string holds an invalid sk".into());
     }
-    let signing_share =
-        SigningShare::deserialize(&backup.share).map_err(|_| "the backup string holds an invalid signing share")?;
+    let signing_share = SigningShare::deserialize(&backup.share)
+        .map_err(|_| "the backup string holds an invalid signing share")?;
     let (network, fvk) = keys::parse_ufvk(ufvk)?;
     let ak: [u8; 32] = fvk.to_bytes()[..32].try_into()?;
     let derivation = if keys::derive(&backup.sk, &ak)?.fvk == fvk {
@@ -125,14 +152,23 @@ pub fn restore(text: &str, ufvk: &str) -> Result<Restored, Box<dyn Error>> {
         VerifyingKey::deserialize(&ak)?,
         u16::from(backup.t),
     );
-    Ok(Restored { backup, derivation, key_package, fvk, network })
+    Ok(Restored {
+        backup,
+        derivation,
+        key_package,
+        fvk,
+        network,
+    })
 }
 
 /// Checks a restored member against its group's public key package. The
 /// restore cannot do this alone: sk proves that the viewing key and the string
 /// go together, not that the share, the identifier, the threshold or ak are
 /// the group's (the draft's Restore, step 5, and its Security Considerations).
-pub fn check_member(restored: &Restored, public_key_package: &PublicKeyPackage) -> Result<(), Box<dyn Error>> {
+pub fn check_member(
+    restored: &Restored,
+    public_key_package: &PublicKeyPackage,
+) -> Result<(), Box<dyn Error>> {
     let key_package = &restored.key_package;
     let b = &restored.backup;
     if key_package.verifying_key() != public_key_package.verifying_key() {
@@ -143,10 +179,16 @@ pub fn check_member(restored: &Restored, public_key_package: &PublicKeyPackage) 
         .get(key_package.identifier())
         .ok_or_else(|| format!("member {} is not in this group", b.id))?;
     if expected != key_package.verifying_share() {
-        return Err(format!("member {}'s signing share does not match the group's verifying share", b.id).into());
+        return Err(format!(
+            "member {}'s signing share does not match the group's verifying share",
+            b.id
+        )
+        .into());
     }
     if usize::from(b.n) != public_key_package.verifying_shares().len()
-        || public_key_package.min_signers().is_some_and(|t| t != u16::from(b.t))
+        || public_key_package
+            .min_signers()
+            .is_some_and(|t| t != u16::from(b.t))
     {
         return Err(format!("threshold {} of {} does not match this group", b.t, b.n).into());
     }
@@ -180,7 +222,10 @@ mod tests {
     }
 
     fn bytes32(value: &Value) -> [u8; 32] {
-        hex::decode(value.as_str().unwrap()).unwrap().try_into().unwrap()
+        hex::decode(value.as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap()
     }
 
     /// The draft's vectors, checked against Zkool's own code when generated
@@ -200,7 +245,10 @@ mod tests {
                 assert_eq!(backup.sk, bytes32(&group["sk"]));
                 assert_eq!(backup.encode().unwrap(), text);
 
-                for (key, network) in [("ufvk_mainnet", NetworkType::Main), ("ufvk_testnet", NetworkType::Test)] {
+                for (key, network) in [
+                    ("ufvk_mainnet", NetworkType::Main),
+                    ("ufvk_testnet", NetworkType::Test),
+                ] {
                     let restored = restore(text, group[key].as_str().unwrap()).unwrap();
                     assert_eq!(restored.derivation, expected);
                     assert_eq!(restored.network, network);
@@ -214,7 +262,11 @@ mod tests {
 
         for case in vectors["invalid"].as_array().unwrap() {
             let text = case["string"].as_str().unwrap();
-            assert!(Backup::decode(text).is_err(), "accepted: {}", case["reason"]);
+            assert!(
+                Backup::decode(text).is_err(),
+                "accepted: {}",
+                case["reason"]
+            );
         }
 
         let wrong = &vectors["wrong_group"];
@@ -224,8 +276,16 @@ mod tests {
 
         for case in vectors["restore_invalid"].as_array().unwrap() {
             let text = case["string"].as_str().unwrap();
-            assert!(Backup::decode(text).is_ok(), "does not decode: {}", case["reason"]);
-            assert!(restore(text, case["ufvk_mainnet"].as_str().unwrap()).is_err(), "restored: {}", case["reason"]);
+            assert!(
+                Backup::decode(text).is_ok(),
+                "does not decode: {}",
+                case["reason"]
+            );
+            assert!(
+                restore(text, case["ufvk_mainnet"].as_str().unwrap()).is_err(),
+                "restored: {}",
+                case["reason"]
+            );
         }
     }
 
@@ -233,10 +293,21 @@ mod tests {
     /// column names, then one array per vector.
     fn test_vector_rows(json: &str) -> Vec<BTreeMap<String, Value>> {
         let lines: Vec<Value> = serde_json::from_str(json).unwrap();
-        let names: Vec<String> = lines[1][0].as_str().unwrap().split(", ").map(String::from).collect();
+        let names: Vec<String> = lines[1][0]
+            .as_str()
+            .unwrap()
+            .split(", ")
+            .map(String::from)
+            .collect();
         lines[2..]
             .iter()
-            .map(|row| names.iter().cloned().zip(row.as_array().unwrap().iter().cloned()).collect())
+            .map(|row| {
+                names
+                    .iter()
+                    .cloned()
+                    .zip(row.as_array().unwrap().iter().cloned())
+                    .collect()
+            })
             .collect()
     }
 
@@ -259,7 +330,9 @@ mod tests {
     /// (tests/fixtures/zcash-test-vectors), independently of this crate.
     #[test]
     fn passes_the_zcash_test_vectors() {
-        let rows = test_vector_rows(include_str!("../tests/fixtures/zcash-test-vectors/frost_member_backup.json"));
+        let rows = test_vector_rows(include_str!(
+            "../tests/fixtures/zcash-test-vectors/frost_member_backup.json"
+        ));
         let mut groups: BTreeMap<String, (u16, BTreeMap<Identifier, KeyPackage>)> = BTreeMap::new();
         for row in &rows {
             let text = row["encoding"].as_str().unwrap();
@@ -269,7 +342,17 @@ mod tests {
             assert_eq!(backup.n as u64, row["n"].as_u64().unwrap());
             assert_eq!(backup.share, bytes32(&row["signing_share"]));
             assert_eq!(backup.sk, bytes32(&row["sk"]));
-            assert_eq!(hex::encode([&[1, backup.id, backup.t, backup.n][..], &backup.share, &backup.sk].concat()), row["payload"]);
+            assert_eq!(
+                hex::encode(
+                    [
+                        &[1, backup.id, backup.t, backup.n][..],
+                        &backup.share,
+                        &backup.sk
+                    ]
+                    .concat()
+                ),
+                row["payload"]
+            );
             assert_eq!(backup.encode().unwrap(), text);
 
             let ak = bytes32(&row["ak"]);
@@ -290,16 +373,24 @@ mod tests {
             assert_eq!(fvk.to_bytes()[64..], bytes32(&row["rivk"]));
 
             let mut restored_key_package = None;
-            for (key, network) in [("ufvk_mainnet", NetworkType::Main), ("ufvk_testnet", NetworkType::Test)] {
+            for (key, network) in [
+                ("ufvk_mainnet", NetworkType::Main),
+                ("ufvk_testnet", NetworkType::Test),
+            ] {
                 let restored = restore(text, row[key].as_str().unwrap()).unwrap();
                 assert_eq!(restored.derivation, expected);
                 assert_eq!(restored.network, network);
                 assert!(restored.fvk == fvk);
-                assert_eq!(hex::encode(restored.key_package.verifying_share().serialize().unwrap()), row["verifying_share"]);
+                assert_eq!(
+                    hex::encode(restored.key_package.verifying_share().serialize().unwrap()),
+                    row["verifying_share"]
+                );
                 restored_key_package = Some(restored.key_package);
             }
             let key_package = restored_key_package.unwrap();
-            let group = groups.entry(row["ufvk_mainnet"].as_str().unwrap().to_string()).or_insert((u16::from(backup.t), BTreeMap::new()));
+            let group = groups
+                .entry(row["ufvk_mainnet"].as_str().unwrap().to_string())
+                .or_insert((u16::from(backup.t), BTreeMap::new()));
             group.1.insert(*key_package.identifier(), key_package);
         }
 
@@ -307,14 +398,24 @@ mod tests {
         let mut signed = 0;
         for (t, members) in groups.values() {
             let first = members.values().next().unwrap();
-            let verifying_shares = members.iter().map(|(id, kp)| (*id, *kp.verifying_share())).collect();
-            let public_key_package = PublicKeyPackage::new(verifying_shares, *first.verifying_key(), Some(*t));
-            let ak: [u8; 32] = first.verifying_key().serialize().unwrap().try_into().unwrap();
+            let verifying_shares = members
+                .iter()
+                .map(|(id, kp)| (*id, *kp.verifying_share()))
+                .collect();
+            let public_key_package =
+                PublicKeyPackage::new(verifying_shares, *first.verifying_key(), Some(*t));
+            let ak: [u8; 32] = first
+                .verifying_key()
+                .serialize()
+                .unwrap()
+                .try_into()
+                .unwrap();
             let ids: Vec<Identifier> = members.keys().copied().collect();
             for subset in subsets(&ids, usize::from(*t)) {
                 let signers = subset.iter().map(|id| (*id, members[id].clone())).collect();
                 let (sighash, alpha) = (rand::random(), signing::random_alpha());
-                let signature = signing::sign(&sighash, &alpha, &signers, &public_key_package).unwrap();
+                let signature =
+                    signing::sign(&sighash, &alpha, &signers, &public_key_package).unwrap();
                 signing::verify(&ak, &alpha, &sighash, &signature).unwrap();
                 signed += 1;
             }
@@ -323,21 +424,32 @@ mod tests {
         // (10 triples).
         assert_eq!(signed, 19);
 
-        for row in test_vector_rows(include_str!("../tests/fixtures/zcash-test-vectors/frost_member_backup_decoding.json")) {
+        for row in test_vector_rows(include_str!(
+            "../tests/fixtures/zcash-test-vectors/frost_member_backup_decoding.json"
+        )) {
             let text = row["encoding"].as_str().unwrap();
             match row["payload"].as_str() {
                 Some(payload) => {
                     let b = Backup::decode(text).unwrap();
-                    assert_eq!(hex::encode([&[1, b.id, b.t, b.n][..], &b.share, &b.sk].concat()), payload);
+                    assert_eq!(
+                        hex::encode([&[1, b.id, b.t, b.n][..], &b.share, &b.sk].concat()),
+                        payload
+                    );
                 }
                 None => assert!(Backup::decode(text).is_err(), "accepted: {}", row["reason"]),
             }
         }
 
-        for row in test_vector_rows(include_str!("../tests/fixtures/zcash-test-vectors/frost_member_backup_restore.json")) {
+        for row in test_vector_rows(include_str!(
+            "../tests/fixtures/zcash-test-vectors/frost_member_backup_restore.json"
+        )) {
             let text = row["encoding"].as_str().unwrap();
             let ufvk = row["ufvk"].as_str().unwrap();
-            assert!(Backup::decode(text).is_ok(), "does not decode: {}", row["reason"]);
+            assert!(
+                Backup::decode(text).is_ok(),
+                "does not decode: {}",
+                row["reason"]
+            );
             match row["derivation"].as_str() {
                 Some(name) => assert_eq!(restore(text, ufvk).unwrap().derivation, derivation(name)),
                 None => assert!(restore(text, ufvk).is_err(), "restored: {}", row["reason"]),
@@ -363,12 +475,21 @@ mod tests {
             restored.insert(*member.key_package.identifier(), member.key_package);
         }
 
-        let verifying_shares = restored.iter().map(|(id, kp)| (*id, *kp.verifying_share())).collect();
-        let rebuilt = PublicKeyPackage::new(verifying_shares, *public_key_package.verifying_key(), Some(2));
+        let verifying_shares = restored
+            .iter()
+            .map(|(id, kp)| (*id, *kp.verifying_share()))
+            .collect();
+        let rebuilt = PublicKeyPackage::new(
+            verifying_shares,
+            *public_key_package.verifying_key(),
+            Some(2),
+        );
         let ids: Vec<_> = restored.keys().copied().collect();
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
-                let pair = [(*a, restored[a].clone()), (*b, restored[b].clone())].into_iter().collect();
+                let pair = [(*a, restored[a].clone()), (*b, restored[b].clone())]
+                    .into_iter()
+                    .collect();
                 signing::sign(&rand::random(), &signing::random_alpha(), &pair, &rebuilt).unwrap();
             }
         }
@@ -383,27 +504,62 @@ mod tests {
         let ak = signing::group_ak(&public_key_package).unwrap();
         let sk = keys::contributory_sk(&[rand::random(), rand::random(), rand::random()]);
         let ufvk = keys::ufvk(&keys::derive(&sk, &ak).unwrap().fvk, NetworkType::Test).unwrap();
-        let mut members = key_packages.values().map(|key_package| Backup::new(key_package, 3, &sk).unwrap());
+        let mut members = key_packages
+            .values()
+            .map(|key_package| Backup::new(key_package, 3, &sk).unwrap());
         let (first, second) = (members.next().unwrap(), members.next().unwrap());
 
         let good = restore(&first.encode().unwrap(), &ufvk).unwrap();
         check_member(&good, &public_key_package).unwrap();
 
-        let swapped = Backup { id: first.id, t: first.t, n: first.n, share: second.share, sk };
+        let swapped = Backup {
+            id: first.id,
+            t: first.t,
+            n: first.n,
+            share: second.share,
+            sk,
+        };
         let restored = restore(&swapped.encode().unwrap(), &ufvk).unwrap();
-        assert!(check_member(&restored, &public_key_package).unwrap_err().to_string().contains("verifying share"));
+        assert!(
+            check_member(&restored, &public_key_package)
+                .unwrap_err()
+                .to_string()
+                .contains("verifying share")
+        );
 
-        let threshold = Backup { id: first.id, t: 3, n: first.n, share: first.share, sk };
+        let threshold = Backup {
+            id: first.id,
+            t: 3,
+            n: first.n,
+            share: first.share,
+            sk,
+        };
         let restored = restore(&threshold.encode().unwrap(), &ufvk).unwrap();
-        assert!(check_member(&restored, &public_key_package).unwrap_err().to_string().contains("threshold"));
+        assert!(
+            check_member(&restored, &public_key_package)
+                .unwrap_err()
+                .to_string()
+                .contains("threshold")
+        );
 
         // Every member knows sk, so any of them can build a viewing key around
         // an ak of its own that the restore accepts.
         let (_, other_group) = dkg::run(2, 2).unwrap();
-        let forged = keys::ufvk(&keys::derive(&sk, &signing::group_ak(&other_group).unwrap()).unwrap().fvk, NetworkType::Test).unwrap();
+        let forged = keys::ufvk(
+            &keys::derive(&sk, &signing::group_ak(&other_group).unwrap())
+                .unwrap()
+                .fvk,
+            NetworkType::Test,
+        )
+        .unwrap();
         let restored = restore(&first.encode().unwrap(), &forged).unwrap();
         assert_eq!(restored.derivation, Derivation::Zip2005);
-        assert!(check_member(&restored, &public_key_package).unwrap_err().to_string().contains("ak is not"));
+        assert!(
+            check_member(&restored, &public_key_package)
+                .unwrap_err()
+                .to_string()
+                .contains("ak is not")
+        );
     }
 
     #[test]

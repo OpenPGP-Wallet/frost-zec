@@ -8,10 +8,10 @@ use std::fmt;
 
 use ff::PrimeField;
 use orchard::primitives::redpallas::{self, SpendAuth};
-use pczt::roles::low_level_signer::{OrchardParseError, Signer};
 use pczt::Pczt;
-use zcash_primitives::transaction::sighash::{PrecomputedSighashData, SignableInput};
+use pczt::roles::low_level_signer::{OrchardParseError, Signer};
 use zcash_primitives::transaction::TxVersion;
+use zcash_primitives::transaction::sighash::{PrecomputedSighashData, SignableInput};
 
 /// Errors raised inside the low-level signer callbacks.
 #[derive(Debug)]
@@ -50,7 +50,8 @@ pub fn parse(bytes: &[u8]) -> Result<Pczt, Box<dyn Error>> {
 }
 
 pub fn serialize(pczt: Pczt) -> Result<Vec<u8>, Box<dyn Error>> {
-    pczt.serialize().map_err(|e| format!("cannot serialize the PCZT: {e:?}").into())
+    pczt.serialize()
+        .map_err(|e| format!("cannot serialize the PCZT: {e:?}").into())
 }
 
 /// The sighash every spend authorization signature commits to. Only v6
@@ -64,8 +65,11 @@ pub fn sighash(pczt: &Pczt) -> Result<[u8; 32], Box<dyn Error>> {
     if tx_data.version() != TxVersion::V6 {
         return Err("only v6 (NU6.3, Ironwood) transactions are supported".into());
     }
-    let precomputed = PrecomputedSighashData::new_zip244(tx_data).map_err(|_| "cannot compute the sighash of this transaction")?;
-    Ok(*precomputed.signature_hash(&SignableInput::Shielded).as_ref())
+    let precomputed = PrecomputedSighashData::new_zip244(tx_data)
+        .map_err(|_| "cannot compute the sighash of this transaction")?;
+    Ok(*precomputed
+        .signature_hash(&SignableInput::Shielded)
+        .as_ref())
 }
 
 /// The Ironwood spends that still need a signature. Spends in the sealed
@@ -85,7 +89,10 @@ pub fn spends_to_sign(pczt: &Pczt) -> Result<Vec<SpendToSign>, Box<dyn Error>> {
             if action.spend().spend_auth_sig().is_none()
                 && let Some(alpha) = action.spend().alpha()
             {
-                found.push(SpendToSign { index, alpha: alpha.to_repr() });
+                found.push(SpendToSign {
+                    index,
+                    alpha: alpha.to_repr(),
+                });
             }
         }
         Ok(())
@@ -98,13 +105,22 @@ pub fn spends_to_sign(pczt: &Pczt) -> Result<Vec<SpendToSign>, Box<dyn Error>> {
 
 /// Inserts one signature per spend. orchard checks each one against the
 /// spend's rk before accepting it.
-pub fn apply(pczt: Pczt, sighash: &[u8; 32], signatures: &[(usize, [u8; 64])]) -> Result<Pczt, Box<dyn Error>> {
+pub fn apply(
+    pczt: Pczt,
+    sighash: &[u8; 32],
+    signatures: &[(usize, [u8; 64])],
+) -> Result<Pczt, Box<dyn Error>> {
     let signed = Signer::new(pczt).sign_ironwood_with(|_, bundle, _| -> Result<(), TxError> {
         let actions = bundle.actions_mut();
         for (index, signature) in signatures {
-            let action = actions.get_mut(*index).ok_or_else(|| TxError::Refused(format!("no action {index}")))?;
+            let action = actions
+                .get_mut(*index)
+                .ok_or_else(|| TxError::Refused(format!("no action {index}")))?;
             action
-                .apply_signature(*sighash, redpallas::Signature::<SpendAuth>::from(*signature))
+                .apply_signature(
+                    *sighash,
+                    redpallas::Signature::<SpendAuth>::from(*signature),
+                )
                 .map_err(TxError::Apply)?;
         }
         Ok(())
@@ -125,7 +141,10 @@ mod tests {
     #[test]
     fn sighash_matches_the_signed_testnet_transaction() {
         let pczt = parse(IRONWOOD_V6).unwrap();
-        assert_eq!(hex::encode(sighash(&pczt).unwrap()), "7d48149e6ae74a301bc74c7e1a5af48c52c0d20550a086899db07555e73f53a5");
+        assert_eq!(
+            hex::encode(sighash(&pczt).unwrap()),
+            "7d48149e6ae74a301bc74c7e1a5af48c52c0d20550a086899db07555e73f53a5"
+        );
     }
 
     #[test]

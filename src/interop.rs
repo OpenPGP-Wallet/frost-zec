@@ -29,11 +29,11 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Instant;
 
-use orchard::keys::FullViewingKey;
-use reddsa::frost::redpallas as frost;
+use frost::Identifier;
 use frost::keys::dkg;
 use frost::keys::{KeyPackage, PublicKeyPackage};
-use frost::Identifier;
+use orchard::keys::FullViewingKey;
+use reddsa::frost::redpallas as frost;
 use serde::{Deserialize, Serialize};
 use zcash_protocol::consensus::NetworkType;
 
@@ -102,7 +102,8 @@ pub struct Vault {
 
 impl Vault {
     pub fn load(dir: &Path) -> Result<Vault, Box<dyn Error>> {
-        let bytes = fs::read(dir.join(VAULT_FILE)).map_err(|_| format!("no vault in {}: run `interop dkg` first", dir.display()))?;
+        let bytes = fs::read(dir.join(VAULT_FILE))
+            .map_err(|_| format!("no vault in {}: run `interop dkg` first", dir.display()))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -111,7 +112,9 @@ impl Vault {
     }
 
     pub fn public_key_package(&self) -> Result<PublicKeyPackage, Box<dyn Error>> {
-        Ok(PublicKeyPackage::deserialize(&hex::decode(&self.public_key_package)?)?)
+        Ok(PublicKeyPackage::deserialize(&hex::decode(
+            &self.public_key_package,
+        )?)?)
     }
 
     pub fn fvk(&self) -> Result<FullViewingKey, Box<dyn Error>> {
@@ -119,7 +122,10 @@ impl Vault {
     }
 }
 
-pub fn member_identifier(identity: &[u8; 32], vault_id: &[u8; 16]) -> Result<Identifier, Box<dyn Error>> {
+pub fn member_identifier(
+    identity: &[u8; 32],
+    vault_id: &[u8; 16],
+) -> Result<Identifier, Box<dyn Error>> {
     let mut input = PERSONAL_IDENTIFIER.to_vec();
     input.extend_from_slice(vault_id);
     input.extend_from_slice(identity);
@@ -192,7 +198,11 @@ fn transcript_hash(
     Ok(finalize(state))
 }
 
-fn combine_sk(vault_id: &[u8; 16], transcript: &[u8; 32], contributions: &BTreeMap<Identifier, [u8; 32]>) -> [u8; 32] {
+fn combine_sk(
+    vault_id: &[u8; 16],
+    transcript: &[u8; 32],
+    contributions: &BTreeMap<Identifier, [u8; 32]>,
+) -> [u8; 32] {
     let mut state = blake2b_256(PERSONAL_VAULT_SK);
     state.update(vault_id);
     state.update(transcript);
@@ -241,19 +251,39 @@ pub fn dkg(
             sk_commitment: hex::encode(my_commitment),
         },
     )?;
-    println!("[{me}] round 1 written: send {} to every other member.", exchange.join(format!("round1.{me}.json")).display());
-    println!("[{me}] waiting for round 1 from {} other member(s) in {}...", max_signers - 1, exchange.display());
+    println!(
+        "[{me}] round 1 written: send {} to every other member.",
+        exchange.join(format!("round1.{me}.json")).display()
+    );
+    println!(
+        "[{me}] waiting for round 1 from {} other member(s) in {}...",
+        max_signers - 1,
+        exchange.display()
+    );
 
     // Round 1 from the others: each identifier must follow from its identity key.
     let mut round1_others = BTreeMap::new();
     let mut identities = BTreeMap::from([(my_id, identity)]);
     let mut commitments = BTreeMap::from([(my_id, my_commitment)]);
-    let messages: Vec<Round1Message> = wait_for(exchange, "round1.", Some(&format!("round1.{me}.json")), usize::from(max_signers) - 1)?;
+    let messages: Vec<Round1Message> = wait_for(
+        exchange,
+        "round1.",
+        Some(&format!("round1.{me}.json")),
+        usize::from(max_signers) - 1,
+    )?;
     for message in messages {
         if message.format != FORMAT || message.kind != "dkg-round1" {
-            return Err(format!("unexpected message in round 1: {} {}", message.format, message.kind).into());
+            return Err(format!(
+                "unexpected message in round 1: {} {}",
+                message.format, message.kind
+            )
+            .into());
         }
-        if message.vault_id != hex::encode(vault_id) || message.network != network_name || message.min_signers != min_signers || message.max_signers != max_signers {
+        if message.vault_id != hex::encode(vault_id)
+            || message.network != network_name
+            || message.min_signers != min_signers
+            || message.max_signers != max_signers
+        {
             return Err("a member uses another vault id, network or threshold".into());
         }
         let their_identity = bytes32(&message.identity)?;
@@ -265,12 +295,21 @@ pub fn dkg(
             return Err("two members share one identity".into());
         }
         commitments.insert(their_id, bytes32(&message.sk_commitment)?);
-        round1_others.insert(their_id, dkg::round1::Package::deserialize(&hex::decode(&message.package)?)?);
+        round1_others.insert(
+            their_id,
+            dkg::round1::Package::deserialize(&hex::decode(&message.package)?)?,
+        );
     }
     let (round2_secret, outgoing) = dkg::part2(round1_secret, &round1_others)?;
     let mut round1_all = round1_others.clone();
     round1_all.insert(my_id, my_round1);
-    let my_echo = echo(&vault_id, min_signers, max_signers, &round1_all, &commitments)?;
+    let my_echo = echo(
+        &vault_id,
+        min_signers,
+        max_signers,
+        &round1_all,
+        &commitments,
+    )?;
 
     for (recipient, package) in outgoing {
         let path = exchange.join(format!("round2.{me}-to-{}.json", short(&recipient)));
@@ -287,36 +326,65 @@ pub fn dkg(
                 sk_contribution: hex::encode(contribution),
             },
         )?;
-        println!("[{me}] round 2 written: send {} to member {} only, over an end-to-end encrypted channel (it holds secrets).", path.display(), short(&recipient));
+        println!(
+            "[{me}] round 2 written: send {} to member {} only, over an end-to-end encrypted channel (it holds secrets).",
+            path.display(),
+            short(&recipient)
+        );
     }
 
     // Round 2 to this member: the same view of round 1, and contributions that
     // match their commitments.
-    println!("[{me}] waiting for round 2 from {} other member(s)...", max_signers - 1);
+    println!(
+        "[{me}] waiting for round 2 from {} other member(s)...",
+        max_signers - 1
+    );
     let suffix = format!("-to-{me}.json");
-    let paths = wait_for_paths(exchange, "round2.", |name| name.ends_with(&suffix), usize::from(max_signers) - 1)?;
+    let paths = wait_for_paths(
+        exchange,
+        "round2.",
+        |name| name.ends_with(&suffix),
+        usize::from(max_signers) - 1,
+    )?;
     let mut round2_received = BTreeMap::new();
     let mut contributions = BTreeMap::from([(my_id, contribution)]);
     for path in &paths {
         let message: Round2Message = session::wait_json(path, Instant::now() + session::TIMEOUT)?;
-        if message.format != FORMAT || message.kind != "dkg-round2" || message.vault_id != hex::encode(vault_id) || message.to != hex::encode(my_id.serialize()) {
+        if message.format != FORMAT
+            || message.kind != "dkg-round2"
+            || message.vault_id != hex::encode(vault_id)
+            || message.to != hex::encode(my_id.serialize())
+        {
             return Err(format!("unexpected round 2 message in {}", path.display()).into());
         }
         let from = Identifier::deserialize(&hex::decode(&message.from)?)?;
-        let their_identity = identities.get(&from).ok_or("round 2 from a member that sent no round 1")?;
+        let their_identity = identities
+            .get(&from)
+            .ok_or("round 2 from a member that sent no round 1")?;
         if message.echo != hex::encode(my_echo) {
             return Err(format!("member {} saw a different round 1: abort", short(&from)).into());
         }
         let revealed = bytes32(&message.sk_contribution)?;
         if sk_commitment(&vault_id, their_identity, &revealed) != commitments[&from] {
-            return Err(format!("member {}'s contribution to sk does not match its commitment", short(&from)).into());
+            return Err(format!(
+                "member {}'s contribution to sk does not match its commitment",
+                short(&from)
+            )
+            .into());
         }
         contributions.insert(from, revealed);
-        if round2_received.insert(from, dkg::round2::Package::deserialize(&hex::decode(&message.package)?)?).is_some() {
+        if round2_received
+            .insert(
+                from,
+                dkg::round2::Package::deserialize(&hex::decode(&message.package)?)?,
+            )
+            .is_some()
+        {
             return Err("two round 2 packages from the same member".into());
         }
     }
-    let (key_package, public_key_package) = dkg::part3(&round2_secret, &round1_others, &round2_received)?;
+    let (key_package, public_key_package) =
+        dkg::part3(&round2_secret, &round1_others, &round2_received)?;
     let ak = signing::group_ak(&public_key_package)?;
     let transcript = transcript_hash(&vault_id, min_signers, max_signers, &round1_all, &ak)?;
     let sk = combine_sk(&vault_id, &transcript, &contributions);
@@ -329,7 +397,10 @@ pub fn dkg(
         max_signers,
         identity: hex::encode(identity),
         identifier: hex::encode(my_id.serialize()),
-        members: round1_all.keys().map(|id| hex::encode(id.serialize())).collect(),
+        members: round1_all
+            .keys()
+            .map(|id| hex::encode(id.serialize()))
+            .collect(),
         key_package: hex::encode(key_package.serialize()?),
         public_key_package: hex::encode(public_key_package.serialize()?),
         sk: hex::encode(sk),
@@ -344,16 +415,25 @@ pub fn dkg(
     }
     println!("[{me}] vault saved in {}.", out.join(VAULT_FILE).display());
     print_vault(&vault);
-    println!("Compare the address with every other member before funding it. Delete the round 2 files you sent once they have been received.");
+    println!(
+        "Compare the address with every other member before funding it. Delete the round 2 files you sent once they have been received."
+    );
     Ok(())
 }
 
 pub fn print_vault(vault: &Vault) {
     println!("network:      {}", vault.network);
     println!("vault id:     {}", vault.vault_id);
-    println!("threshold:    {}-of-{}", vault.min_signers, vault.max_signers);
+    println!(
+        "threshold:    {}-of-{}",
+        vault.min_signers, vault.max_signers
+    );
     for member in &vault.members {
-        let marker = if *member == vault.identifier { "  (this member)" } else { "" };
+        let marker = if *member == vault.identifier {
+            "  (this member)"
+        } else {
+            ""
+        };
         println!("member:       {}{marker}", &member[..8]);
     }
     println!("ak (FROST):   {}", vault.ak);
@@ -374,12 +454,25 @@ fn write_json<T: Serialize>(path: &Path, message: &T) -> Result<(), Box<dyn Erro
 }
 
 /// Waits until `count` files `prefix*.json` (other than `own`) are in `dir`, then reads them.
-fn wait_for<T: for<'de> Deserialize<'de>>(dir: &Path, prefix: &str, own: Option<&str>, count: usize) -> Result<Vec<T>, Box<dyn Error>> {
+fn wait_for<T: for<'de> Deserialize<'de>>(
+    dir: &Path,
+    prefix: &str,
+    own: Option<&str>,
+    count: usize,
+) -> Result<Vec<T>, Box<dyn Error>> {
     let paths = wait_for_paths(dir, prefix, |name| Some(name) != own, count)?;
-    paths.iter().map(|path| session::wait_json(path, Instant::now() + session::TIMEOUT)).collect()
+    paths
+        .iter()
+        .map(|path| session::wait_json(path, Instant::now() + session::TIMEOUT))
+        .collect()
 }
 
-fn wait_for_paths(dir: &Path, prefix: &str, keep: impl Fn(&str) -> bool, count: usize) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn wait_for_paths(
+    dir: &Path,
+    prefix: &str,
+    keep: impl Fn(&str) -> bool,
+    count: usize,
+) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let deadline = Instant::now() + session::TIMEOUT;
     loop {
         let mut found = Vec::new();
@@ -412,15 +505,24 @@ pub fn network_type(name: &str) -> Result<NetworkType, Box<dyn Error>> {
 }
 
 fn bytes32(text: &str) -> Result<[u8; 32], Box<dyn Error>> {
-    hex::decode(text)?.try_into().map_err(|_| "expected 32 bytes".into())
+    hex::decode(text)?
+        .try_into()
+        .map_err(|_| "expected 32 bytes".into())
 }
 
 fn blake2b_256(personal: &[u8; 16]) -> blake2b_simd::State {
-    blake2b_simd::Params::new().hash_length(32).personal(personal).to_state()
+    blake2b_simd::Params::new()
+        .hash_length(32)
+        .personal(personal)
+        .to_state()
 }
 
 fn finalize(state: blake2b_simd::State) -> [u8; 32] {
-    state.finalize().as_bytes().try_into().expect("32-byte hash")
+    state
+        .finalize()
+        .as_bytes()
+        .try_into()
+        .expect("32-byte hash")
 }
 
 #[cfg(test)]
@@ -439,17 +541,36 @@ mod tests {
             .into_iter()
             .map(|name| {
                 let (exchange, out) = (exchange.clone(), root.join(name));
-                thread::spawn(move || dkg("test", vault_id, 2, 2, &exchange, &out).map_err(|e| e.to_string()).map(|()| out))
+                thread::spawn(move || {
+                    dkg("test", vault_id, 2, 2, &exchange, &out)
+                        .map_err(|e| e.to_string())
+                        .map(|()| out)
+                })
             })
             .collect();
-        let vaults: Vec<Vault> = members.into_iter().map(|m| Vault::load(&m.join().unwrap().unwrap()).unwrap()).collect();
+        let vaults: Vec<Vault> = members
+            .into_iter()
+            .map(|m| Vault::load(&m.join().unwrap().unwrap()).unwrap())
+            .collect();
         assert_eq!(vaults[0].address, vaults[1].address);
         assert_eq!(vaults[0].sk, vaults[1].sk);
         assert_ne!(vaults[0].identifier, vaults[1].identifier);
 
-        let signers: BTreeMap<_, _> = vaults.iter().map(|v| { let k = v.key_package().unwrap(); (*k.identifier(), k) }).collect();
+        let signers: BTreeMap<_, _> = vaults
+            .iter()
+            .map(|v| {
+                let k = v.key_package().unwrap();
+                (*k.identifier(), k)
+            })
+            .collect();
         let sighash: [u8; 32] = rand::random();
-        signing::sign(&sighash, &signing::random_alpha(), &signers, &vaults[0].public_key_package().unwrap()).unwrap();
+        signing::sign(
+            &sighash,
+            &signing::random_alpha(),
+            &signers,
+            &vaults[0].public_key_package().unwrap(),
+        )
+        .unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 }
