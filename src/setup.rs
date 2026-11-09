@@ -80,6 +80,40 @@ fn random32() -> [u8; 32] {
     rand::random()
 }
 
+/// The commitment to a member's contribution `r`, for test vectors.
+#[doc(hidden)]
+pub fn commitment_for_vectors(member: u16, contribution: &[u8; 32]) -> [u8; 32] {
+    sk_commitment(member, contribution)
+}
+
+/// The transcript hash `T` over three round 1 entries, for test vectors.
+#[doc(hidden)]
+pub fn transcript_for_vectors(
+    network: u8,
+    entries: &[Round1Entry],
+) -> Result<[u8; 32], Box<dyn Error>> {
+    let mut transcript = Transcript::new(network);
+    for entry in entries {
+        transcript.add(entry)?;
+    }
+    transcript.hash()
+}
+
+/// `sk` from the transcript, `ak` and the contributions, for test vectors.
+#[doc(hidden)]
+pub fn sk_for_vectors(
+    transcript: &[u8; 32],
+    ak: &[u8; 32],
+    contributions: &[[u8; 32]; 3],
+) -> [u8; 32] {
+    let contributions = BTreeMap::from([
+        (COORDINATOR, contributions[0]),
+        (COSIGNER, contributions[1]),
+        (BACKUP, contributions[2]),
+    ]);
+    combine_sk(transcript, ak, &contributions)
+}
+
 /// One member's round 1: its DKG package and its commitment to `r`.
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]

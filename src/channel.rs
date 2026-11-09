@@ -435,6 +435,19 @@ impl Pairing {
     ) -> Sealed {
         let mut nonce = [0u8; NONCE_SIZE];
         rng.fill_bytes(&mut nonce);
+        self.seal_with_nonce(kind, session, plaintext, nonce)
+    }
+
+    /// [`Pairing::seal`] with a given nonce, for test vectors. A nonce must
+    /// never be used twice under the same key.
+    #[doc(hidden)]
+    pub fn seal_with_nonce(
+        &self,
+        kind: u8,
+        session: &[u8],
+        plaintext: &[u8],
+        nonce: [u8; NONCE_SIZE],
+    ) -> Sealed {
         let aad = self.associated_data(self.role, kind, session);
         let cipher = XChaCha20Poly1305::new(&self.send_key.into());
         let ciphertext = cipher

@@ -7,9 +7,7 @@ This document specifies how two devices of one user share a FROST 2-of-3
 account for shielded ZEC in the Ironwood pool: how they pair, create the keys,
 sign a spend, what the co-signer checks before it signs, and how a member is
 backed up. The goal is that a co-signer from one wallet can work with a
-coordinator from another. Sections marked *(to implement)* describe decisions
-already taken whose code is not written yet; the reference code lives in this
-crate.
+coordinator from another. The reference code lives in this crate.
 
 ## 1. Roles
 
@@ -245,10 +243,25 @@ its identifier, `t`, `n`, signing share and `sk`. Because the string holds
 discrete logarithms; the planned profiles are a passphrase-encrypted file and a
 mnemonic.
 
-## 8. Test vectors *(to implement)*
+## 8. Test vectors
 
-Deterministic pairing transcripts, sealed messages, and signing sessions, with
-the inputs that produce them.
+`tests/fixtures/spec-vectors.json` gives fixed inputs and the expected outputs
+for:
+
+- pairing (§ 3): the initiator's X-Wing seed, `r_i`, the encapsulation
+  randomness and `r_r`; the encapsulation key, commitment, ciphertext, code,
+  pairing id and both direction keys;
+- a sealed message (§ 3.4): kind, session, plaintext and nonce; the ciphertext;
+- wire encodings (§ 2): a pair-init message, a pair-confirm payload and the
+  same payload as a single-part UR;
+- key generation (§ 4): three real DKG round 1 packages, the contributions, the
+  group key `ak`; the commitments, `T`, `sk`, and the resulting unified full
+  viewing key and Mainnet address.
+
+`tests/vectors.rs` recomputes every output from the formulas in this document,
+calling BLAKE2b, X-Wing and XChaCha20-Poly1305 directly, and checks that the
+implementation gives the same bytes. FROST signatures are randomized, so the
+signing session has no fixed vectors; `tests/protocol.rs` runs it end to end.
 
 ## 9. Open questions
 
