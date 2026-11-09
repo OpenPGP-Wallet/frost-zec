@@ -36,6 +36,14 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      # Reading QR codes from images (the webcam backend builds on Windows).
+      - name: Tests with the camera
+        if: matrix.os == 'windows-latest'
+        run: cargo test --locked --features camera --bin frost-zec
+
+      - name: Library without the command-line tool
+        run: cargo clippy --locked --lib --no-default-features -- -D warnings
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

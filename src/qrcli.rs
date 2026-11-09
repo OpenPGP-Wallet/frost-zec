@@ -1,15 +1,16 @@
 //! `frost-zec qr ...`: the QR protocol of docs/spec.md, as a test co-signer
 //! and a test coordinator.
 //!
-//!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR] [--yes]
+//!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR|qr] [--yes]
 //!   qr sign --as cosigner [--state DIR] [--via DIR] [--yes]
 //!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR]
 //!   qr info [--state DIR]
 //!
-//! Every message is a single-part UR (`ur:zcash-frost/...`) written as a text
-//! file in the `--via` directory: one person can pass the files between two
-//! machines, or the text can be copied and pasted. Animated QR codes carry the
-//! same payloads.
+//! With `--via qr`, every message is shown as an animated QR code and the
+//! answer is read with the webcam (build with `--features camera`). With
+//! `--via DIR`, each message is a single-part UR (`ur:zcash-frost/...`) written
+//! as a text file in DIR: one person can pass the files between two machines,
+//! or the text can be copied and pasted. Both carry the same payloads.
 //!
 //! `--yes` skips the human checks (the pairing code and the approval of a
 //! payment): tests only.
@@ -36,7 +37,7 @@ use rand10::rngs::SysRng;
 use reddsa::frost::redpallas::keys::{KeyPackage, PublicKeyPackage};
 use serde::{Deserialize, Serialize};
 
-use super::{flag, option, print_report};
+use super::{flag, option, print_report, qrview};
 
 const SEAT_FILE: &str = "seat.json";
 const DKG_SESSION: &[u8] = b"dkg";
@@ -142,10 +143,85 @@ fn state_dir(args: &[String]) -> PathBuf {
     PathBuf::from(option(args, "--state").unwrap_or("qr-state"))
 }
 
-fn via_dir(args: &[String]) -> Result<PathBuf, Box<dyn Error>> {
-    let dir = PathBuf::from(option(args, "--via").unwrap_or("qr-exchange"));
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// How messages travel: UR text files in a directory, or QR codes.
+enum Carrier {
+    Files(PathBuf),
+    Qr(Option<qrview::Display>),
+}
+
+impl Carrier {
+    fn from_args(args: &[String]) -> Result<Carrier, Box<dyn Error>> {
+        match option(args, "--via") {
+            Some("qr") => Ok(Carrier::Qr(None)),
+            other => {
+                let dir = PathBuf::from(other.unwrap_or("qr-exchange"));
+                fs::create_dir_all(&dir)?;
+                Ok(Carrier::Files(dir))
+            }
+        }
+    }
+
+    /// Sends a message the other device will answer: in QR mode the code stays
+    /// on screen while this device reads the answer.
+    fn send(&mut self, name: &str, messages: &[Message]) -> Result<(), Box<dyn Error>> {
+        match self {
+            Carrier::Files(dir) => write_file(dir, name, messages),
+            Carrier::Qr(showing) => {
+                if let Some(display) = showing.take() {
+                    display.stop();
+                }
+                *showing = Some(qrview::Display::start(
+                    &wire::encode_payload(messages),
+                    format!("{name}: let the other device read this code."),
+                )?);
+                Ok(())
+            }
+        }
+    }
+
+    /// Sends the last message of a step: in QR mode, waits for Enter once the
+    /// other device has read it.
+    fn send_last(&mut self, name: &str, messages: &[Message]) -> Result<(), Box<dyn Error>> {
+        match self {
+            Carrier::Files(dir) => write_file(dir, name, messages),
+            Carrier::Qr(showing) => {
+                if let Some(display) = showing.take() {
+                    display.stop();
+                }
+                let display = qrview::Display::start(
+                    &wire::encode_payload(messages),
+                    format!("{name}: let the other device read this code, then press Enter."),
+                )?;
+                let mut line = String::new();
+                io::stdin().lock().read_line(&mut line)?;
+                display.stop();
+                Ok(())
+            }
+        }
+    }
+
+    fn receive(&mut self, name: &str) -> Result<Vec<Message>, Box<dyn Error>> {
+        match self {
+            Carrier::Files(dir) => read_file(dir, name),
+            Carrier::Qr(showing) => {
+                let payload = scan(name)?;
+                if let Some(display) = showing.take() {
+                    display.stop();
+                }
+                Ok(wire::decode_payload(&payload)?)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "camera")]
+fn scan(name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    qrview::scan(name)
+}
+
+#[cfg(not(feature = "camera"))]
+fn scan(_: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    Err("this build cannot read QR codes: build with --features camera, or use --via DIR".into())
 }
 
 fn rng() -> UnwrapErr<SysRng> {
@@ -153,7 +229,7 @@ fn rng() -> UnwrapErr<SysRng> {
 }
 
 /// Writes one QR payload as a single-part UR text file, atomically.
-fn send(dir: &Path, name: &str, messages: &[Message]) -> Result<(), Box<dyn Error>> {
+fn write_file(dir: &Path, name: &str, messages: &[Message]) -> Result<(), Box<dyn Error>> {
     let payload = wire::encode_payload(messages);
     let text = ur::encode(&payload, &ur::Type::Custom(wire::UR_TYPE));
     let temporary = dir.join(format!(".{name}.tmp"));
@@ -169,7 +245,7 @@ fn send(dir: &Path, name: &str, messages: &[Message]) -> Result<(), Box<dyn Erro
 /// Waits for one QR payload (up to an hour), then removes its file. A file
 /// still being copied in does not decode yet, so it is read again until it
 /// does, and refused once it has stayed the same for a few seconds.
-fn receive(dir: &Path, name: &str) -> Result<Vec<Message>, Box<dyn Error>> {
+fn read_file(dir: &Path, name: &str) -> Result<Vec<Message>, Box<dyn Error>> {
     let path = dir.join(name);
     println!("  … waiting for {}", path.display());
     let deadline = Instant::now() + session::TIMEOUT;
@@ -233,20 +309,19 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    let via = via_dir(args)?;
+    let mut carrier = Carrier::from_args(args)?;
     let yes = flag(args, "--yes");
     let mut rng = rng();
     match role {
         "coordinator" => {
             println!("[coordinator] pairing and key generation, network {network_name}");
             let (initiator, init) = Initiator::start(&mut rng);
-            send(&via, PAIR_INIT, &[Message::pair_init(&init)])?;
-            let messages = receive(&via, PAIR_RESPONSE)?;
+            carrier.send(PAIR_INIT, &[Message::pair_init(&init)])?;
+            let messages = carrier.receive(PAIR_RESPONSE)?;
             one(&messages, 1)?;
             let (pending, confirm) = initiator.finish(&messages[0].to_pair_response()?)?;
             let (coordinator_setup, round1) = CoordinatorSetup::start(network)?;
-            send(
-                &via,
+            carrier.send_last(
                 PAIR_CONFIRM,
                 &[
                     Message::pair_confirm(&confirm),
@@ -264,7 +339,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
                 return Err("pairing cancelled: the codes differ".into());
             }
             let pairing = pending.confirm();
-            let messages = receive(&via, COSIGNER_KEYS)?;
+            let messages = carrier.receive(COSIGNER_KEYS)?;
             one(&messages, 2)?;
             let (_, theirs1) = messages[0].open(&pairing, kind::DKG_ROUND1)?;
             let (_, theirs2) = messages[1].open(&pairing, kind::DKG_ROUND2)?;
@@ -272,8 +347,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
                 &Round1::from_bytes(&theirs1)?,
                 &Round2::from_bytes(&theirs2)?,
             )?;
-            send(
-                &via,
+            carrier.send_last(
                 COORDINATOR_KEYS,
                 &[Message::seal(
                     &pairing,
@@ -289,11 +363,11 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         "cosigner" => {
             println!("[co-signer] pairing and key generation, network {network_name}");
-            let messages = receive(&via, PAIR_INIT)?;
+            let messages = carrier.receive(PAIR_INIT)?;
             one(&messages, 1)?;
             let (responder, response) = Responder::respond(&messages[0].to_pair_init()?, &mut rng)?;
-            send(&via, PAIR_RESPONSE, &[Message::pair_response(&response)])?;
-            let messages = receive(&via, PAIR_CONFIRM)?;
+            carrier.send(PAIR_RESPONSE, &[Message::pair_response(&response)])?;
+            let messages = carrier.receive(PAIR_CONFIRM)?;
             one(&messages, 2)?;
             let pending = responder.finish(&messages[0].to_pair_confirm()?)?;
             println!("  pairing code: {}", pending.code());
@@ -304,8 +378,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             let (_, theirs1) = messages[1].open(&pairing, kind::DKG_ROUND1)?;
             let (cosigner_setup, round1, round2) =
                 CosignerSetup::respond(network, &Round1::from_bytes(&theirs1)?)?;
-            send(
-                &via,
+            carrier.send(
                 COSIGNER_KEYS,
                 &[
                     Message::seal(
@@ -324,7 +397,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
                     )?,
                 ],
             )?;
-            let messages = receive(&via, COORDINATOR_KEYS)?;
+            let messages = carrier.receive(COORDINATOR_KEYS)?;
             one(&messages, 1)?;
             let (_, theirs2) = messages[0].open(&pairing, kind::DKG_ROUND2)?;
             let (cosigner, backup) = cosigner_setup.finish(&Round2::from_bytes(&theirs2)?)?;
@@ -362,14 +435,13 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let seat = Seat::load(&state_dir(args))?;
     let pairing = seat.pairing()?;
     let member = seat.member()?;
-    let via = via_dir(args)?;
+    let mut carrier = Carrier::from_args(args)?;
     let mut rng = rng();
     match role {
         "cosigner" => {
             println!("[co-signer] signing session");
             let (session, opening) = CosignerSession::open(&member, &mut rng);
-            send(
-                &via,
+            carrier.send(
                 SIGN_COMMITMENTS,
                 &[Message::seal(
                     &pairing,
@@ -379,7 +451,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
                     &mut rng,
                 )?],
             )?;
-            let messages = receive(&via, SIGN_REQUEST)?;
+            let messages = carrier.receive(SIGN_REQUEST)?;
             one(&messages, 1)?;
             let (bound, bytes) = messages[0].open(&pairing, kind::SIGN_REQUEST)?;
             let request = Request::from_bytes(&bytes)?;
@@ -405,8 +477,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
             if let Reply::Refused { reason, .. } = &reply {
                 println!("  refused: {reason}");
             }
-            send(
-                &via,
+            carrier.send_last(
                 SIGN_REPLY,
                 &[Message::seal(
                     &pairing,
@@ -422,7 +493,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
             let output = option(args, "--out").ok_or("--out OUT is required")?;
             let pczt = fs::read(input)?;
             println!("[coordinator] signing session");
-            let messages = receive(&via, SIGN_COMMITMENTS)?;
+            let messages = carrier.receive(SIGN_COMMITMENTS)?;
             one(&messages, 1)?;
             let (bound, bytes) = messages[0].open(&pairing, kind::SIGN_COMMITMENTS)?;
             let opening = Commitments::from_bytes(&bytes)?;
@@ -432,8 +503,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
             let (coordinating, request, report) =
                 CoordinatorSession::request(&member, &pczt, &opening)?;
             print_report("coordinator", &report);
-            send(
-                &via,
+            carrier.send(
                 SIGN_REQUEST,
                 &[Message::seal(
                     &pairing,
@@ -443,7 +513,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
                     &mut rng,
                 )?],
             )?;
-            let messages = receive(&via, SIGN_REPLY)?;
+            let messages = carrier.receive(SIGN_REPLY)?;
             one(&messages, 1)?;
             let (_, bytes) = messages[0].open(&pairing, kind::SIGN_REPLY)?;
             let signed = coordinating.finish(&Reply::from_bytes(&bytes)?)?;

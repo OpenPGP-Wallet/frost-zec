@@ -32,6 +32,7 @@
 //! seat created with `interop dkg`.
 
 mod qrcli;
+mod qrview;
 mod store;
 
 use frost_zec::{backup, check, dkg, interop, keys, pczt_io, session, signing};
