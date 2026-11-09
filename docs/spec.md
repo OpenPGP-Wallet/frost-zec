@@ -165,15 +165,24 @@ step will follow ZIP 312.
 
 Already implemented in `src/check.rs`, before any signature:
 
-- the PCZT spends only Ironwood notes of this group, with no transparent or
-  Sapling part;
+- the PCZT spends only Ironwood notes of this group. Any transparent, Sapling
+  or Orchard part is refused: the signature covers it, and value spent from the
+  group and paid out there would only look like a larger fee;
 - for every action: the spent note's nullifier and the randomized key `rk` are
   recomputed from the note and the group's full viewing key; the output note
   commitment and the value commitment are recomputed; a dummy spend must
   already be signed; no dummy spending key may remain (ZIP 374);
 - a witness, when present, must lead to the bundle's anchor;
 - outputs are sorted into payments and change with the group's viewing key,
-  and the fee is the difference;
+  and the fee is the difference. It must equal the bundle's signed value
+  balance;
+- every output is read back with the group's outgoing viewing key: the
+  ciphertext must hold the very note committed to, so the recipient can find
+  it, and the memo shown comes from that decryption, with control and
+  direction-changing characters escaped. A PCZT whose outputs cannot be read
+  back this way is refused, so coordinators must encrypt outputs to the group's
+  outgoing viewing key;
+- a non-zero lock time is shown;
 - a transaction that never expires is refused; the device warns that a v6
   signature does not prove the spent notes exist, and authorizes these exact
   payments until the expiry height;
@@ -184,10 +193,6 @@ Already implemented in `src/check.rs`, before any signature:
 - each coordinator signature share is verified against member 1's verifying
   share, and the aggregated signature is verified under the spend's `rk`
   before the co-signer replies;
-- every output is decrypted with the group's outgoing viewing key: the
-  decrypted note must be the one committed to, so the recipient can actually
-  find it, and the memo shown to the user comes from that decryption; a PCZT
-  whose outputs cannot be recovered this way is refused;
 - the co-signer shows the full recipient address, amount, fee and memo, from
   its own decoding, and asks for approval.
 

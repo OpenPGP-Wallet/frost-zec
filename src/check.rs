@@ -121,10 +121,21 @@ pub fn analyze(
     fvk: &FullViewingKey,
     network: NetworkType,
 ) -> Result<Report, Box<dyn Error>> {
-    if pczt.has_data_in_pool(PoolType::Transparent) || pczt.has_data_in_pool(PoolType::SAPLING) {
-        return Err(
-            "the transaction has transparent or Sapling parts, which this prototype refuses".into(),
-        );
+    // Every part of the transaction is covered by the signature. A part this
+    // co-signer does not decode could carry value away without being shown:
+    // value spent from the group's Ironwood notes and paid out in, say, an
+    // Orchard bundle would only look like a larger fee here.
+    for (pool, name) in [
+        (PoolType::Transparent, "transparent"),
+        (PoolType::SAPLING, "Sapling"),
+        (PoolType::ORCHARD, "Orchard"),
+    ] {
+        if pczt.has_data_in_pool(pool) {
+            return Err(format!(
+                "the transaction has {name} parts, which the co-signer does not decode: refused"
+            )
+            .into());
+        }
     }
 
     let mut lines = Vec::new();
@@ -132,10 +143,17 @@ pub fn analyze(
     let mut spent = 0u64;
     let mut paid = 0u64;
     let mut change = 0u64;
+    let mut value_balance = None;
 
     if *pczt.global().tx_version() == V6_TX_VERSION {
         warnings.push(pre_authorization(*pczt.global().expiry_height())?);
     }
+    if let Some(lock_time) = pczt.global().fallback_lock_time().filter(|t| *t != 0) {
+        lines.push(format!("not valid before lock time {lock_time}"));
+    }
+
+    let external_ovk = fvk.to_ovk(Scope::External);
+    let internal_ovk = fvk.to_ovk(Scope::Internal);
 
     Signer::new(pczt.clone()).sign_ironwood_with(|_, bundle, _| -> Result<(), TxError> {
         let refuse = |what: &str, error: &dyn std::fmt::Debug| {
@@ -146,6 +164,11 @@ pub fn analyze(
             .map_err(|e| refuse("cross-address check failed", &e))?;
         let anchor = *bundle.anchor();
         let anchor_deferred = *bundle.anchor_deferred();
+        let bundle_version = *bundle.bundle_version();
+        value_balance = Some(
+            i64::try_from(*bundle.value_sum())
+                .map_err(|e| refuse("bundle value balance out of range", &e))?,
+        );
         for (index, action) in bundle.actions().iter().enumerate() {
             let spend = action.spend();
             let output = action.output();
@@ -186,6 +209,30 @@ pub fn analyze(
                 let recipient = output.recipient().ok_or_else(|| {
                     TxError::Refused(format!("action {index}: output without recipient"))
                 })?;
+                // The note ciphertext is signed too, but nothing above checks
+                // it. Reading the note back with the group's outgoing viewing
+                // key proves that the ciphertext holds this very note, so the
+                // recipient can find it, and gives the memo actually sent.
+                let mut recovered = None;
+                for ovk in [&external_ovk, &internal_ovk] {
+                    recovered = action
+                        .recover_output_with_ovk(ovk, bundle_version)
+                        .map_err(|e| refuse(&format!("action {index}: note encryption"), &e))?;
+                    if recovered.is_some() {
+                        break;
+                    }
+                }
+                let (note, address, memo) = recovered.ok_or_else(|| {
+                    TxError::Refused(format!(
+                        "action {index}: the output cannot be read back with this group's \
+                         outgoing viewing key, so the co-signer cannot tell what it sends"
+                    ))
+                })?;
+                if address != recipient || note.value().inner() != output_value {
+                    return Err(TxError::Refused(format!(
+                        "action {index}: the encrypted note differs from the one described"
+                    )));
+                }
                 match fvk.scope_for_address(&recipient) {
                     Some(Scope::Internal) => {
                         add(&mut change, output_value)?;
@@ -203,6 +250,7 @@ pub fn analyze(
                         let address = keys::encode_address(&recipient, network)
                             .map_err(|e| TxError::Refused(e.to_string()))?;
                         lines.push(format!("PAY {} to {address}", zec(output_value)));
+                        lines.push(format!("    {}", describe_memo(&memo)));
                     }
                 }
             }
@@ -215,6 +263,14 @@ pub fn analyze(
     let fee = spent
         .checked_sub(outputs)
         .ok_or("the outputs are worth more than the spent notes")?;
+    // The signed balance of the bundle is what actually leaves it. With no
+    // other part in the transaction, all of it is the fee.
+    if value_balance != Some(fee as i64) {
+        return Err(format!(
+            "the bundle's signed value balance ({value_balance:?}) is not the fee shown ({fee})"
+        )
+        .into());
+    }
     lines.push(format!("fee {}", zec(fee)));
     if fee > HIGH_FEE {
         warnings.push(format!("high fee: {}", zec(fee)));
@@ -225,9 +281,47 @@ pub fn analyze(
     Ok(Report { lines, warnings })
 }
 
+/// The memo as ZIP 302 defines it, made safe to show: control and
+/// direction-changing characters are escaped, so a memo cannot rewrite the
+/// lines around it on screen.
+pub fn describe_memo(memo: &[u8; 512]) -> String {
+    match memo[0] {
+        0xF6 if memo[1..].iter().all(|b| *b == 0) => "no memo".into(),
+        0x00..=0xF4 => {
+            let end = memo.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
+            match std::str::from_utf8(&memo[..end]) {
+                Ok(text) => format!("memo: \"{}\"", text.escape_debug()),
+                Err(_) => "memo: text that is not valid UTF-8".into(),
+            }
+        }
+        kind => format!("memo: binary data (type 0x{kind:02x})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memos_are_shown_safely() {
+        let mut memo = [0u8; 512];
+        memo[0] = 0xF6;
+        assert_eq!(describe_memo(&memo), "no memo");
+        let text = "invoice 42\u{202E}gnp.exe\nPAY 0";
+        let mut memo = [0u8; 512];
+        memo[..text.len()].copy_from_slice(text.as_bytes());
+        let shown = describe_memo(&memo);
+        assert!(
+            !shown.contains('\u{202E}') && !shown.contains('\n'),
+            "{shown}"
+        );
+        assert!(shown.starts_with("memo: \"invoice 42"));
+        memo[0] = 0xFF;
+        assert_eq!(describe_memo(&memo), "memo: binary data (type 0xff)");
+        let mut memo = [0u8; 512];
+        memo[..2].copy_from_slice(&[0xC3, 0x28]);
+        assert_eq!(describe_memo(&memo), "memo: text that is not valid UTF-8");
+    }
 
     #[test]
     fn totals_are_bounded_by_the_supply() {
