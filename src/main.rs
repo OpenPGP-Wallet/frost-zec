@@ -31,15 +31,9 @@
 //! app. `--as N` uses participant N of the group in data/; `--vault DIR` uses a
 //! seat created with `interop dkg`.
 
-mod backup;
-mod check;
-mod dkg;
-mod interop;
-mod keys;
-mod pczt_io;
-mod session;
-mod signing;
 mod store;
+
+use frost_zec::{backup, check, dkg, interop, keys, pczt_io, session, signing};
 
 use std::collections::BTreeMap;
 use std::error::Error;
