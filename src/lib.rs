@@ -18,3 +18,4 @@ pub mod keys;
 pub mod pczt_io;
 pub mod session;
 pub mod signing;
+pub mod wire;
