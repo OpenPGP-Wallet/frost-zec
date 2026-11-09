@@ -5,6 +5,10 @@ Ironwood pool. Three participants create a RedPallas key together with
 distributed key generation (no trusted dealer), and any two of them can
 authorize a spend. Nobody ever holds the full spend authorizing key.
 
+The protocol code is a Rust library, `frost_zec`, with no dependency on any
+wallet. The `frost-zec` command-line tool below is built on it. Contributions
+are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 > **Prototype.** The key shares and `sk` are stored unencrypted in `data/` to
 > keep the code easy to read. Only use it with amounts you can afford to lose.
 

@@ -3,6 +3,14 @@ name = "frost-zec"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "FROST threshold signing for shielded ZEC: DKG, ZIP 2005 group keys, re-randomized PCZT signing, co-signer checks and member backup strings"
+repository = "https://github.com/OpenPGP-Wallet/frost-zec"
+readme = "README.md"
+keywords = ["zcash", "frost", "threshold", "pczt", "orchard"]
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+# Only the code, its test fixtures and the docs go into the package. Never the
+# prototype's key storage (data/), signing sessions or local PCZT files.
+include = ["/src/**", "/tests/fixtures/**", "/docs/**", "/README.md", "/LICENSE", "/CONTRIBUTING.md"]
 
 # The NU7 releases of the Zcash libraries (2026-10-21). PCZTs keep the same
 # encoding as before, so files from zcash-devtool still parse here and go back
