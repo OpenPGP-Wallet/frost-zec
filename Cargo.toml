@@ -40,5 +40,6 @@ zeroize = "1"
 
 [dev-dependencies]
 pczt = { version = "=0.10.0", features = ["io-finalizer", "zcp-builder", "signer"] }
+rand = "0.8"
 zcash_primitives = { version = "=0.31.0", default-features = false, features = ["std"] }
 zcash_protocol = "=0.11.0"

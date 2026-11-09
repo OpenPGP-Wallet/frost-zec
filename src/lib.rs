@@ -11,6 +11,7 @@
 pub mod backup;
 pub mod channel;
 pub mod check;
+pub mod cosigning;
 pub mod dkg;
 pub mod interop;
 pub mod keys;
