@@ -70,11 +70,70 @@ fn a_payment_the_group_cannot_read_back_is_refused() {
     assert!(refused.contains("outgoing viewing key"), "{refused}");
 }
 
+/// zcash_client_backend encrypts change with no outgoing key by default. The
+/// group decrypts its change with its incoming viewing key instead.
 #[test]
-fn change_the_group_cannot_read_back_is_refused() {
+fn change_without_an_outgoing_key_is_accepted() {
     let mut tx = honest(&group(), MemoBytes::empty());
     tx.outputs[1].ovk = Ovk::Without;
-    let refused = analyze(&build(&group(), tx)).unwrap_err();
+    let shown = analyze(&build(&group(), tx)).unwrap().lines.join("\n");
+    assert!(
+        shown.contains("change 0.00590000 ZEC back to this group"),
+        "{shown}"
+    );
+}
+
+/// Flips one byte inside the note ciphertext of the output worth `value`. The
+/// note commitment still matches the claimed note, so only decrypting the
+/// ciphertext can notice: the recipient would never find these funds.
+fn garble_ciphertext(pczt: &Pczt, value: u64) -> Pczt {
+    let mut ciphertext = None;
+    pczt::roles::low_level_signer::Signer::new(pczt.clone())
+        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
+            for action in bundle.actions() {
+                if action.output().value().map(|v| v.inner()) == Some(value) {
+                    ciphertext = Some(
+                        action
+                            .output()
+                            .encrypted_note()
+                            .enc_ciphertext
+                            .as_ref()
+                            .to_vec(),
+                    );
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    let ciphertext = ciphertext.expect("an output with this value");
+    let mut bytes = pczt_io::serialize(pczt.clone()).unwrap();
+    let at = bytes
+        .windows(ciphertext.len())
+        .position(|window| window == ciphertext.as_slice())
+        .expect("the ciphertext in the serialized PCZT");
+    bytes[at + 100] ^= 1;
+    pczt_io::parse(&bytes).unwrap()
+}
+
+#[test]
+fn a_garbled_change_ciphertext_is_refused() {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.outputs[1].ovk = Ovk::Without;
+    let pczt = garble_ciphertext(&build(&group(), tx), SPEND - PAYMENT - fee(2));
+    let refused = analyze(&pczt).unwrap_err();
+    assert!(
+        refused.contains("cannot decrypt its own output"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_garbled_payment_ciphertext_is_refused() {
+    let pczt = garble_ciphertext(
+        &build(&group(), honest(&group(), text_memo("invoice 42"))),
+        PAYMENT,
+    );
+    let refused = analyze(&pczt).unwrap_err();
     assert!(refused.contains("outgoing viewing key"), "{refused}");
 }
 

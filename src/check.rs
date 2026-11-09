@@ -9,7 +9,7 @@
 
 use std::error::Error;
 
-use orchard::keys::{FullViewingKey, Scope};
+use orchard::keys::{FullViewingKey, PreparedIncomingViewingKey, Scope};
 use orchard::note::ExtractedNoteCommitment;
 use orchard::{Anchor, Note};
 use pczt::Pczt;
@@ -155,6 +155,8 @@ pub fn analyze(
 
     let external_ovk = fvk.to_ovk(Scope::External);
     let internal_ovk = fvk.to_ovk(Scope::Internal);
+    let external_ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
+    let internal_ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::Internal));
 
     Signer::new(pczt.clone()).sign_ironwood_with(|_, bundle, _| -> Result<(), TxError> {
         let refuse = |what: &str, error: &dyn std::fmt::Debug| {
@@ -211,30 +213,47 @@ pub fn analyze(
                     TxError::Refused(format!("action {index}: output without recipient"))
                 })?;
                 // The note ciphertext is signed too, but nothing above checks
-                // it. Reading the note back with the group's outgoing viewing
-                // key proves that the ciphertext holds this very note, so the
+                // it. Decrypting it proves that it holds this very note, so its
                 // recipient can find it, and gives the memo actually sent.
-                let mut recovered = None;
-                for ovk in [&external_ovk, &internal_ovk] {
-                    recovered = action
-                        .recover_output_with_ovk(ovk, bundle_version)
-                        .map_err(|e| refuse(&format!("action {index}: note encryption"), &e))?;
-                    if recovered.is_some() {
-                        break;
+                let scope = fvk.scope_for_address(&recipient);
+                let decrypted = match scope {
+                    // The group's own output (change, or a payment to itself):
+                    // decrypted with its incoming viewing key, as its wallet
+                    // will when scanning. Wallets often encrypt change with no
+                    // outgoing key, so this is the check that always applies.
+                    Some(Scope::Internal) => {
+                        action.decrypt_output_with_ivk(&internal_ivk, bundle_version)
                     }
+                    Some(Scope::External) => {
+                        action.decrypt_output_with_ivk(&external_ivk, bundle_version)
+                    }
+                    // A payment: read back with the group's outgoing viewing key.
+                    None => action
+                        .recover_output_with_ovk(&external_ovk, bundle_version)
+                        .and_then(|found| match found {
+                            Some(found) => Ok(Some(found)),
+                            None => action.recover_output_with_ovk(&internal_ovk, bundle_version),
+                        }),
                 }
-                let (note, address, memo) = recovered.ok_or_else(|| {
-                    TxError::Refused(format!(
-                        "action {index}: the output cannot be read back with this group's \
-                         outgoing viewing key, so the co-signer cannot tell what it sends"
-                    ))
+                .map_err(|e| refuse(&format!("action {index}: note encryption"), &e))?;
+                let (note, address, memo) = decrypted.ok_or_else(|| {
+                    TxError::Refused(match scope {
+                        Some(_) => format!(
+                            "action {index}: the group cannot decrypt its own output, so its \
+                             wallet would never find these funds"
+                        ),
+                        None => format!(
+                            "action {index}: the payment cannot be read back with this group's \
+                             outgoing viewing key, so the co-signer cannot tell what it sends"
+                        ),
+                    })
                 })?;
                 if address != recipient || note.value().inner() != output_value {
                     return Err(TxError::Refused(format!(
                         "action {index}: the encrypted note differs from the one described"
                     )));
                 }
-                match fvk.scope_for_address(&recipient) {
+                match scope {
                     Some(Scope::Internal) => {
                         add(&mut change, output_value)?;
                         lines.push(format!("change {} back to this group", zec(output_value)));

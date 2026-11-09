@@ -176,12 +176,12 @@ Already implemented in `src/check.rs`, before any signature:
 - outputs are sorted into payments and change with the group's viewing key,
   and the fee is the difference. It must equal the bundle's signed value
   balance;
-- every output is read back with the group's outgoing viewing key: the
-  ciphertext must hold the very note committed to, so the recipient can find
-  it, and the memo shown comes from that decryption, with control and
-  direction-changing characters escaped. A PCZT whose outputs cannot be read
-  back this way is refused, so coordinators must encrypt outputs to the group's
-  outgoing viewing key;
+- every output's note ciphertext is decrypted, which proves it holds the very
+  note committed to, so its recipient can find it. The group's own outputs
+  (change) are decrypted with its incoming viewing key, as its wallet will when
+  scanning; payments are read back with the group's outgoing viewing key, so
+  coordinators must encrypt payments to it. The memo shown comes from that
+  decryption, with control and direction-changing characters escaped;
 - a non-zero lock time is shown;
 - a transaction that never expires is refused; the device warns that a v6
   signature does not prove the spent notes exist, and authorizes these exact
