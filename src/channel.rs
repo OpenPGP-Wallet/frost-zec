@@ -383,6 +383,24 @@ impl PendingPairing {
     pub fn confirm(self) -> Pairing {
         self.pairing
     }
+
+    /// Seals a message before the code is confirmed. Only for messages with no
+    /// secret, such as the coordinator's DKG round 1, which rides with
+    /// pair-confirm: until the user confirms the code, the other end may be a
+    /// man in the middle.
+    pub fn seal_public<R: CryptoRng + ?Sized>(
+        &self,
+        kind: u8,
+        session: &[u8],
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Sealed {
+        self.pairing.seal(kind, session, plaintext, rng)
+    }
+
+    pub fn id(&self) -> [u8; PAIRING_ID_SIZE] {
+        self.pairing.id
+    }
 }
 
 impl Pairing {

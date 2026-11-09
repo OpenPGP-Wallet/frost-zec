@@ -341,3 +341,192 @@ impl<'a> CoordinatorSession<'a> {
         pczt_io::apply(self.pczt, &self.sighash, &signatures)
     }
 }
+
+// The three messages on the wire (CBOR maps, sealed under the pairing).
+
+use minicbor::bytes::ByteVec;
+use minicbor::{Decode, Encode};
+
+/// The longest refusal reason a co-signer may send back.
+const MAX_REASON: usize = 1000;
+
+#[derive(Encode, Decode)]
+#[cbor(map)]
+struct CommitmentsWire {
+    #[n(1)]
+    #[cbor(with = "minicbor::bytes")]
+    session: [u8; SESSION_ID_SIZE],
+    #[n(2)]
+    #[cbor(with = "minicbor::bytes")]
+    member: Vec<u8>,
+    #[n(3)]
+    commitments: Vec<ByteVec>,
+}
+
+#[derive(Encode, Decode)]
+#[cbor(map)]
+struct RequestWire {
+    #[n(1)]
+    #[cbor(with = "minicbor::bytes")]
+    session: [u8; SESSION_ID_SIZE],
+    #[n(2)]
+    #[cbor(with = "minicbor::bytes")]
+    member: Vec<u8>,
+    #[n(3)]
+    #[cbor(with = "minicbor::bytes")]
+    pczt: Vec<u8>,
+    #[n(4)]
+    commitments: Vec<ByteVec>,
+    #[n(5)]
+    shares: Vec<ByteVec>,
+}
+
+#[derive(Encode, Decode)]
+#[cbor(map)]
+struct ReplyWire {
+    #[n(1)]
+    #[cbor(with = "minicbor::bytes")]
+    session: [u8; SESSION_ID_SIZE],
+    #[n(2)]
+    #[cbor(with = "minicbor::bytes")]
+    member: Vec<u8>,
+    #[n(3)]
+    shares: Option<Vec<ByteVec>>,
+    #[n(4)]
+    refused: Option<String>,
+}
+
+fn to_cbor<T: Encode<()>>(value: &T) -> Vec<u8> {
+    minicbor::to_vec(value).expect("encoding to memory cannot fail")
+}
+
+fn bounded(count: usize) -> Result<(), Box<dyn Error>> {
+    if count > MAX_SPENDS {
+        return Err(format!("more than {MAX_SPENDS} commitments or shares").into());
+    }
+    Ok(())
+}
+
+fn commitments_out(list: &[SigningCommitments]) -> Result<Vec<ByteVec>, Box<dyn Error>> {
+    list.iter()
+        .map(|c| Ok(ByteVec::from(c.serialize()?)))
+        .collect()
+}
+
+fn commitments_in(list: &[ByteVec]) -> Result<Vec<SigningCommitments>, Box<dyn Error>> {
+    bounded(list.len())?;
+    list.iter()
+        .map(|c| Ok(SigningCommitments::deserialize(c)?))
+        .collect()
+}
+
+fn shares_out(list: &[SignatureShare]) -> Vec<ByteVec> {
+    list.iter().map(|s| ByteVec::from(s.serialize())).collect()
+}
+
+fn shares_in(list: &[ByteVec]) -> Result<Vec<SignatureShare>, Box<dyn Error>> {
+    bounded(list.len())?;
+    list.iter()
+        .map(|s| Ok(SignatureShare::deserialize(s)?))
+        .collect()
+}
+
+impl Commitments {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(to_cbor(&CommitmentsWire {
+            session: self.session,
+            member: self.member.serialize(),
+            commitments: commitments_out(&self.commitments)?,
+        }))
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let wire: CommitmentsWire = minicbor::decode(bytes)?;
+        Ok(Commitments {
+            session: wire.session,
+            member: Identifier::deserialize(&wire.member)?,
+            commitments: commitments_in(&wire.commitments)?,
+        })
+    }
+}
+
+impl Request {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(to_cbor(&RequestWire {
+            session: self.session,
+            member: self.member.serialize(),
+            pczt: self.pczt.clone(),
+            commitments: commitments_out(&self.commitments)?,
+            shares: shares_out(&self.shares),
+        }))
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let wire: RequestWire = minicbor::decode(bytes)?;
+        Ok(Request {
+            session: wire.session,
+            member: Identifier::deserialize(&wire.member)?,
+            pczt: wire.pczt,
+            commitments: commitments_in(&wire.commitments)?,
+            shares: shares_in(&wire.shares)?,
+        })
+    }
+}
+
+impl Reply {
+    pub fn session(&self) -> [u8; SESSION_ID_SIZE] {
+        match self {
+            Reply::Shares { session, .. } | Reply::Refused { session, .. } => *session,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let wire = match self {
+            Reply::Shares {
+                session,
+                member,
+                shares,
+            } => ReplyWire {
+                session: *session,
+                member: member.serialize(),
+                shares: Some(shares_out(shares)),
+                refused: None,
+            },
+            Reply::Refused {
+                session,
+                member,
+                reason,
+            } => ReplyWire {
+                session: *session,
+                member: member.serialize(),
+                shares: None,
+                refused: Some(reason.chars().take(MAX_REASON).collect()),
+            },
+        };
+        to_cbor(&wire)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let wire: ReplyWire = minicbor::decode(bytes)?;
+        let member = Identifier::deserialize(&wire.member)?;
+        match (wire.shares, wire.refused) {
+            (Some(shares), None) => Ok(Reply::Shares {
+                session: wire.session,
+                member,
+                shares: shares_in(&shares)?,
+            }),
+            (None, Some(reason)) => Ok(Reply::Refused {
+                session: wire.session,
+                member,
+                // Shown to the user: keep it short and free of control characters.
+                reason: reason
+                    .chars()
+                    .take(MAX_REASON)
+                    .collect::<String>()
+                    .escape_debug()
+                    .to_string(),
+            }),
+            _ => Err("a reply holds either shares or a refusal".into()),
+        }
+    }
+}

@@ -256,6 +256,31 @@ impl Message {
         ))
     }
 
+    /// Seals a message with no secret before the pairing code is confirmed
+    /// (see [`channel::PendingPairing::seal_public`]).
+    pub fn seal_public<R: CryptoRng + ?Sized>(
+        pending: &channel::PendingPairing,
+        inner_kind: u8,
+        session: &[u8],
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Result<Message, WireError> {
+        if session.len() > MAX_SESSION_SIZE {
+            return Err(WireError::Malformed("session id too long".into()));
+        }
+        let sealed = pending.seal_public(inner_kind, session, plaintext, rng);
+        Ok(Message::new(
+            kind::SEALED,
+            encode(&SealedBody {
+                pairing: pending.id(),
+                kind: inner_kind,
+                session: session.to_vec(),
+                nonce: sealed.nonce,
+                ciphertext: sealed.ciphertext,
+            }),
+        ))
+    }
+
     /// Opens a sealed message of the expected inner kind. Returns the session
     /// id it is bound to and the plaintext.
     pub fn open(&self, pairing: &Pairing, inner_kind: u8) -> Result<(Vec<u8>, Vec<u8>), WireError> {
