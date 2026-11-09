@@ -225,15 +225,17 @@ Already implemented in `src/check.rs`, before any signature:
 - a transaction that never expires is refused; the device warns that a v6
   signature does not prove the spent notes exist, and authorizes these exact
   payments until the expiry height;
-- the sighash is computed on the device, never taken from the coordinator.
+- the sighash is computed on the device, never taken from the coordinator;
+- the coordinator's signature shares are aggregated with the co-signer's own,
+  and each signature is verified under the spend's `rk` before the user is
+  asked;
+- the co-signer shows the full recipient address, amount, fee and memo, built
+  only from its own decoding, never from fields such as the PCZT's
+  `user_address` label, and asks for approval.
 
-*(to implement)*
-
-- each coordinator signature share is verified against member 1's verifying
-  share, and the aggregated signature is verified under the spend's `rk`
-  before the co-signer replies;
-- the co-signer shows the full recipient address, amount, fee and memo, from
-  its own decoding, and asks for approval.
+The tamper suite (`tests/tamper.rs`, run in CI) builds PCZTs a dishonest
+coordinator could send and checks that each one is refused or shown exactly as
+it will be signed, including every single-field redaction of every action.
 
 ## 7. Backup *(Milestone 2)*
 
