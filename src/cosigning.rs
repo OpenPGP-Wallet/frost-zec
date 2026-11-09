@@ -39,6 +39,7 @@ pub const SESSION_ID_SIZE: usize = 16;
 
 /// What a member needs to sign: its key package, the group's public keys,
 /// and the group's full viewing key for the checks.
+#[derive(Clone)]
 pub struct Member {
     pub key_package: KeyPackage,
     pub public_key_package: PublicKeyPackage,
@@ -238,9 +239,10 @@ impl PendingApproval {
     }
 }
 
-/// The coordinator between messages 2 and 3.
-pub struct CoordinatorSession<'a> {
-    member: &'a Member,
+/// The coordinator between messages 2 and 3. It owns a copy of the member, so
+/// an app can keep the session between two scans.
+pub struct CoordinatorSession {
+    member: Member,
     session: [u8; SESSION_ID_SIZE],
     other: Identifier,
     pczt: Pczt,
@@ -250,11 +252,11 @@ pub struct CoordinatorSession<'a> {
     shares: Vec<SignatureShare>,
 }
 
-impl<'a> CoordinatorSession<'a> {
+impl CoordinatorSession {
     /// Message 2: checks the PCZT too (whatever built it is not trusted to
     /// have built what the user asked for), then signs its part.
     pub fn request(
-        member: &'a Member,
+        member: &Member,
         pczt_bytes: &[u8],
         theirs: &Commitments,
     ) -> Result<(Self, Request, Report), Box<dyn Error>> {
@@ -292,7 +294,7 @@ impl<'a> CoordinatorSession<'a> {
             shares: shares.clone(),
         };
         let coordinator = CoordinatorSession {
-            member,
+            member: member.clone(),
             session: theirs.session,
             other: theirs.member,
             pczt,
