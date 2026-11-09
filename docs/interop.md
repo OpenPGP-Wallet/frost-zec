@@ -125,8 +125,20 @@ values, for a test between two people who already trust their channel.
 
 ## Tested so far
 
-A local harness compiles zafe-core's own `keygen.rs`, `keys.rs`, `signing.rs`, `tx.rs` and
-`verify.rs` (zafe-cash/zafe at df28b77, with Zafe's pinned versions) and plays a Zafe member against
+**On Mainnet, with a real Zafe member (2026-11-09).** Anmol Bansal (Zafe) and I created a 2-of-2
+vault with this format, one member running Zafe and the other frost-zec, and spent from it in both
+directions. Each side checked the PCZT with its own code before signing.
+
+| Spend | Coordinator | Co-signer | Transaction | Block |
+|---|---|---|---|---|
+| 1 | frost-zec (PCZT from `zcash-devtool`) | Zafe | `904905d823f15a7f43ebe72157e0301b07191eebc17a88f8cdd54571a81fece8` | 3,556,155 |
+| 2 | Zafe | frost-zec | `2e41dc225386fec1625f9b00f52b9ab8e92b7fa56656f854b5ae2bbcea23fa7e` | 3,556,179 |
+
+Zafe's co-signer matches every payment against what its user expects, so for spend 1 the recipient,
+amount and memo were also sent to it out of band.
+
+Before that, a local harness compiled zafe-core's own `keygen.rs`, `keys.rs`, `signing.rs`, `tx.rs` and
+`verify.rs` (zafe-cash/zafe at df28b77, with Zafe's pinned versions) and played a Zafe member against
 frost-zec:
 
 - a joint 2-of-2 key generation gives both sides the same `ak`, `sk`, viewing key and address;
@@ -135,5 +147,4 @@ frost-zec:
 - zafe-core's `verify_pczt` accepts the PCZTs that `zcash-devtool` built for the mainnet spends of
   2026-10-15, and refuses them with a wrong amount, a wrong consensus branch or another vault's key.
 
-The PCZT used for the signing test spends an invented note, so it was never broadcast. A spend on
-chain from a vault shared with a real Zafe member is the next step.
+The PCZT used for that signing test spent an invented note, so it was never broadcast.
