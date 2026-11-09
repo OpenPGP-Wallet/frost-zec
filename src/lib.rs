@@ -22,3 +22,7 @@ pub mod session;
 pub mod setup;
 pub mod signing;
 pub mod wire;
+
+/// The FROST(Pallas, BLAKE2b-512) types this crate uses, so that a wallet uses
+/// the very same version.
+pub use reddsa::frost::redpallas;
