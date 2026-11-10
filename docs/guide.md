@@ -101,10 +101,18 @@ once they have enough confirmations (a few minutes since NU7).
    [testnet](https://testnet.zcashexplorer.app) or
    [Mainnet](https://mainnet.zcashexplorer.app).
 
-## The text variant (one computer)
+## The text variant (one computer, no camera)
 
-Use `--via DIR` on the co-signer instead of `--via qr`. Each message it sends is
-written to DIR as a text file, and each message it expects is read from DIR:
+Use `--via clipboard` on the co-signer instead of `--via qr`. It puts each of
+its messages on the clipboard and rings the terminal bell: paste it in the
+wallet (**Paste**, then **Use**). When the wallet shows a message, click
+**Copy as text**: the co-signer takes it from the clipboard by itself. The
+co-signer clears the clipboard when it starts, so start it before copying the
+wallet's first message.
+
+With `--via DIR` instead, each message the co-signer sends is written to DIR as
+a text file, and each message it expects is read from DIR, for files carried
+between two machines:
 
 | Step | Wallet | Co-signer file |
 |---|---|---|

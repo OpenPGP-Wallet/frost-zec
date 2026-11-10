@@ -1,16 +1,19 @@
 //! `frost-zec qr ...`: the QR protocol of docs/spec.md, as a test co-signer
 //! and a test coordinator.
 //!
-//!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR|qr] [--yes]
-//!   qr sign --as cosigner [--state DIR] [--via DIR] [--yes]
-//!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR]
+//!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR|qr|clipboard] [--yes]
+//!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--yes]
+//!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR|qr|clipboard]
 //!   qr info [--state DIR]
 //!
 //! With `--via qr`, every message is shown as an animated QR code and the
 //! answer is read with the webcam (build with `--features camera`). With
 //! `--via DIR`, each message is a single-part UR (`ur:zcash-frost/...`) written
-//! as a text file in DIR: one person can pass the files between two machines,
-//! or the text can be copied and pasted. Both carry the same payloads.
+//! as a text file in DIR: one person can pass the files between two machines.
+//! With `--via clipboard`, for a wallet on the same computer, each message is
+//! put on the clipboard as that text, and the answer is taken from the
+//! clipboard as soon as the wallet's text is copied. All carry the same
+//! payloads.
 //!
 //! `--yes` skips the human checks (the pairing code and the approval of a
 //! payment): tests only.
@@ -143,16 +146,19 @@ fn state_dir(args: &[String]) -> PathBuf {
     PathBuf::from(option(args, "--state").unwrap_or("qr-state"))
 }
 
-/// How messages travel: UR text files in a directory, or QR codes.
+/// How messages travel: UR text files in a directory, QR codes, or the
+/// clipboard.
 enum Carrier {
     Files(PathBuf),
     Qr,
+    Clipboard(Clipboard),
 }
 
 impl Carrier {
     fn from_args(args: &[String]) -> Result<Carrier, Box<dyn Error>> {
         match option(args, "--via") {
             Some("qr") => Ok(Carrier::Qr),
+            Some("clipboard") => Ok(Carrier::Clipboard(Clipboard::open()?)),
             other => {
                 let dir = PathBuf::from(other.unwrap_or("qr-exchange"));
                 fs::create_dir_all(&dir)?;
@@ -178,6 +184,9 @@ impl Carrier {
                 display.stop();
                 Ok(())
             }
+            Carrier::Clipboard(clipboard) => {
+                clipboard.put(name, &wire::single_part(&wire::encode_payload(messages))?)
+            }
         }
     }
 
@@ -185,6 +194,71 @@ impl Carrier {
         match self {
             Carrier::Files(dir) => read_file(dir, name),
             Carrier::Qr => Ok(wire::decode_payload(&scan(name)?)?),
+            Carrier::Clipboard(clipboard) => Ok(wire::decode_payload(&clipboard.take(name)?)?),
+        }
+    }
+}
+
+/// The clipboard as a carrier, for a wallet on the same computer: this side
+/// puts its messages there, and takes the other side's as soon as they are
+/// copied. Any program on the computer can read the clipboard, which shows no
+/// more than a QR code on a screen: messages are public until the pairing, and
+/// sealed after it.
+struct Clipboard {
+    board: arboard::Clipboard,
+    /// The last text put or taken, so that it is not taken (again) as an answer.
+    last: String,
+}
+
+impl Clipboard {
+    fn open() -> Result<Clipboard, Box<dyn Error>> {
+        let mut board =
+            arboard::Clipboard::new().map_err(|e| format!("cannot open the clipboard: {e}"))?;
+        // A message copied before this run, from an earlier attempt, must not
+        // be taken for the other side's answer.
+        let _ = board.clear();
+        Ok(Clipboard {
+            board,
+            last: String::new(),
+        })
+    }
+
+    fn put(&mut self, name: &str, text: &str) -> Result<(), Box<dyn Error>> {
+        self.board
+            .set_text(text.to_string())
+            .map_err(|e| format!("cannot write to the clipboard: {e}"))?;
+        self.last = text.to_string();
+        // The bell tells the user the other side can paste now.
+        print!("\x07");
+        println!("  → {name} is on the clipboard: paste it into the other program.");
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    fn take(&mut self, name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+        println!("  … waiting for {name}: copy it as text in the other program.");
+        let deadline = Instant::now() + session::TIMEOUT;
+        loop {
+            let copied = self.board.get_text().unwrap_or_default();
+            let text = copied.trim();
+            if !text.is_empty() && text != self.last {
+                self.last = text.to_string();
+                match wire::Reader::default().receive(text) {
+                    Ok(Some(payload)) => return Ok(payload),
+                    // Something else was copied: not for us.
+                    Err(wire::WireError::WrongUrType(_)) => {}
+                    Ok(None) => eprintln!(
+                        "  the clipboard holds one part of an animated QR code: copy the message as text"
+                    ),
+                    Err(e) => {
+                        eprintln!("  the clipboard holds no valid message ({e}): copy it again")
+                    }
+                }
+            }
+            if Instant::now() > deadline {
+                return Err(format!("timed out waiting for {name}").into());
+            }
+            thread::sleep(session::POLL);
         }
     }
 }
