@@ -63,7 +63,9 @@ The steps below use QR codes. The text variant is at the end.
    member. Copy it to an offline medium (a USB stick you keep apart) and
    delete it from the computer. With it and the account's viewing key, member
    3 can be rebuilt in any wallet that implements the member backup string
-   (zcash/zips#1432).
+   (zcash/zips#1432). The rest of `my-cosigner` holds member 2 unencrypted
+   (this test co-signer does not encrypt its state): until the backup string
+   is gone from the computer, that computer alone holds two members of three.
 
 ## 2. Fund it
 
