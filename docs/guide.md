@@ -50,8 +50,9 @@ The steps below use QR codes. The text variant is at the end.
    QR code: in the wallet, click **Read the co-signer's QR code**.
 3. The wallet shows a new QR code and a six-digit code. Let the co-signer read
    the QR code: it shows a six-digit code too. **Compare the two codes.** If
-   they match, confirm on both sides (`y` on the co-signer, **The codes match**
-   in the wallet). If they differ, cancel: something else read or changed the
+   they match, confirm on both sides: `y` on the co-signer, and in the wallet
+   **Confirm the codes…** then **OK** in the Windows window, which shows the
+   code again. If they differ, cancel: something else read or changed the
    messages.
 4. In the wallet, enter your password, then read the co-signer's next QR code
    (its keys).

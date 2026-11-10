@@ -103,7 +103,11 @@ six decimal digits.
 
 Both devices show the code and the user checks that they match. A device MUST
 NOT send anything secret over the pairing before the user confirms the code on
-that device.
+that device. Where untrusted code can draw on the screen, as in a wallet whose
+interface is a web page, the confirmation MUST come from a part of the device
+that code cannot draw or click (OpenPGP Wallet uses a native window): otherwise
+a compromised interface could confirm a pairing with an attacker's co-signer,
+who would then hold two members of three.
 
 Why the commitment: without it, a man in the middle who controls the last
 message could try many values until both devices show the same six digits.
