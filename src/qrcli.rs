@@ -146,13 +146,13 @@ fn state_dir(args: &[String]) -> PathBuf {
 /// How messages travel: UR text files in a directory, or QR codes.
 enum Carrier {
     Files(PathBuf),
-    Qr(Option<qrview::Display>),
+    Qr,
 }
 
 impl Carrier {
     fn from_args(args: &[String]) -> Result<Carrier, Box<dyn Error>> {
         match option(args, "--via") {
-            Some("qr") => Ok(Carrier::Qr(None)),
+            Some("qr") => Ok(Carrier::Qr),
             other => {
                 let dir = PathBuf::from(other.unwrap_or("qr-exchange"));
                 fs::create_dir_all(&dir)?;
@@ -161,33 +161,14 @@ impl Carrier {
         }
     }
 
-    /// Sends a message the other device will answer: in QR mode the code stays
-    /// on screen while this device reads the answer.
+    /// Sends a message. In QR mode the code stays on screen until Enter, and
+    /// only then does the camera open for the answer: with a single camera (a
+    /// phone used as a webcam for both programs), the other side needs it to
+    /// read this code.
     fn send(&mut self, name: &str, messages: &[Message]) -> Result<(), Box<dyn Error>> {
         match self {
             Carrier::Files(dir) => write_file(dir, name, messages),
-            Carrier::Qr(showing) => {
-                if let Some(display) = showing.take() {
-                    display.stop();
-                }
-                *showing = Some(qrview::Display::start(
-                    &wire::encode_payload(messages),
-                    format!("{name}: let the other device read this code."),
-                )?);
-                Ok(())
-            }
-        }
-    }
-
-    /// Sends the last message of a step: in QR mode, waits for Enter once the
-    /// other device has read it.
-    fn send_last(&mut self, name: &str, messages: &[Message]) -> Result<(), Box<dyn Error>> {
-        match self {
-            Carrier::Files(dir) => write_file(dir, name, messages),
-            Carrier::Qr(showing) => {
-                if let Some(display) = showing.take() {
-                    display.stop();
-                }
+            Carrier::Qr => {
                 let display = qrview::Display::start(
                     &wire::encode_payload(messages),
                     format!("{name}: let the other device read this code, then press Enter."),
@@ -203,13 +184,7 @@ impl Carrier {
     fn receive(&mut self, name: &str) -> Result<Vec<Message>, Box<dyn Error>> {
         match self {
             Carrier::Files(dir) => read_file(dir, name),
-            Carrier::Qr(showing) => {
-                let payload = scan(name)?;
-                if let Some(display) = showing.take() {
-                    display.stop();
-                }
-                Ok(wire::decode_payload(&payload)?)
-            }
+            Carrier::Qr => Ok(wire::decode_payload(&scan(name)?)?),
         }
     }
 }
@@ -334,7 +309,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             one(&messages, 1)?;
             let (pending, confirm) = initiator.finish(&messages[0].to_pair_response()?)?;
             let (coordinator_setup, round1) = CoordinatorSetup::start(network)?;
-            carrier.send_last(
+            carrier.send(
                 PAIR_CONFIRM,
                 &[
                     Message::pair_confirm(&confirm),
@@ -360,7 +335,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
                 &Round1::from_bytes(&theirs1)?,
                 &Round2::from_bytes(&theirs2)?,
             )?;
-            carrier.send_last(
+            carrier.send(
                 COORDINATOR_KEYS,
                 &[Message::seal(
                     &pairing,
@@ -490,7 +465,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
             if let Reply::Refused { reason, .. } = &reply {
                 println!("  refused: {reason}");
             }
-            carrier.send_last(
+            carrier.send(
                 SIGN_REPLY,
                 &[Message::seal(
                     &pairing,

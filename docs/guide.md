@@ -47,7 +47,10 @@ The steps below use QR codes. The text variant is at the end.
    ```
 
    Let its camera read the wallet's QR code. The co-signer then shows its own
-   QR code: in the wallet, click **Read the co-signer's QR code**.
+   QR code: in the wallet, click **Read the co-signer's QR code**. Once the
+   wallet has read it, press Enter on the co-signer. The co-signer only opens
+   its camera after Enter, so a single camera (a phone used as a webcam by both
+   programs) is enough: the two take turns.
 3. The wallet shows a new QR code and a six-digit code. Let the co-signer read
    the QR code: it shows a six-digit code too. **Compare the two codes.** If
    they match, confirm on both sides: `y` on the co-signer, and in the wallet
@@ -55,7 +58,7 @@ The steps below use QR codes. The text variant is at the end.
    code again. If they differ, cancel: something else read or changed the
    messages.
 4. In the wallet, enter your password, then read the co-signer's next QR code
-   (its keys).
+   (its keys), and press Enter on the co-signer.
 5. The wallet shows a last QR code and the account's address. Let the
    co-signer read it, and check that **both show the same address**. Then
    click **Done** in the wallet.
@@ -85,7 +88,7 @@ once they have enough confirmations (a few minutes since NU7).
    ```
 
    It shows a QR code with fresh commitments. In the wallet, enter your
-   password, then read it.
+   password, then read it, and press Enter on the co-signer.
 3. The wallet shows the signing request as an animated QR code, and its own
    reading of the transaction. Let the co-signer read it. The co-signer checks
    the transaction on its own and shows what it does: the recipient, the
