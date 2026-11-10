@@ -288,4 +288,11 @@ signing session has no fixed vectors; `tests/protocol.rs` runs it end to end.
 - A pairing has no forward secrecy beyond device compromise (§ 3.4). A ratchet
   would add it at the cost of state that must stay in sync over QR codes.
 - Publishing commitments in advance would save one QR step per signature, as
-  Zafe does.
+  Zafe does. Another way to the same saving: the coordinator sends the request
+  with its own commitments, and the co-signer answers with its commitments and
+  its shares together, so a signature takes two QR codes instead of three and
+  no commitment is kept between sessions. The co-signer would then commit
+  after seeing the coordinator's commitments and the message, which FROST's
+  binding factors are meant to make safe, and it could no longer check the
+  aggregated signature before its user approves. A proposal for v1.0, once
+  that argument has been written down and reviewed.
