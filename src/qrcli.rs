@@ -238,15 +238,19 @@ impl Clipboard {
     fn take(&mut self, name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         println!("  … waiting for {name}: copy it as text in the other program.");
         let deadline = Instant::now() + session::TIMEOUT;
+        let prefix = format!("ur:{}/", wire::UR_TYPE);
         loop {
             let copied = self.board.get_text().unwrap_or_default();
             let text = copied.trim();
-            if !text.is_empty() && text != self.last {
+            // Only our messages are read and remembered: anything else copied
+            // meanwhile, a password for instance, is left alone.
+            let ours = text
+                .get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(&prefix));
+            if ours && text != self.last {
                 self.last = text.to_string();
                 match wire::Reader::default().receive(text) {
                     Ok(Some(payload)) => return Ok(payload),
-                    // Something else was copied: not for us.
-                    Err(wire::WireError::WrongUrType(_)) => {}
                     Ok(None) => eprintln!(
                         "  the clipboard holds one part of an animated QR code: copy the message as text"
                     ),
