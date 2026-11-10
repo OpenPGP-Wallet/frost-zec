@@ -257,7 +257,14 @@ fn read_file(dir: &Path, name: &str) -> Result<Vec<Message>, Box<dyn Error>> {
     let deadline = Instant::now() + session::TIMEOUT;
     let mut bad: Option<(String, Instant)> = None;
     loop {
-        if let Ok(text) = fs::read_to_string(&path) {
+        let read = session::read_message_file(&path);
+        if let Err(error) = &read
+            && error.kind() == io::ErrorKind::InvalidData
+        {
+            return Err(error.to_string().into());
+        }
+        if let Ok(bytes) = read {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
             match wire::Reader::default().receive(text.trim()) {
                 Ok(Some(payload)) => {
                     let _ = fs::remove_file(&path);

@@ -39,12 +39,18 @@ pub enum Progress {
 /// flip their frames, and a mirrored QR code does not decode, so the flipped
 /// images are tried too.
 pub fn detect(image: &image::GrayImage) -> Option<String> {
+    // Whatever is in front of the camera is decoded: a frame the decoder
+    // fails on, even by panicking, is skipped like a frame with no code.
     let find = |image: image::GrayImage| {
-        let mut prepared = rqrr::PreparedImage::prepare(image);
-        prepared
-            .detect_grids()
-            .into_iter()
-            .find_map(|grid| grid.decode().ok().map(|(_, content)| content))
+        std::panic::catch_unwind(move || {
+            let mut prepared = rqrr::PreparedImage::prepare(image);
+            prepared
+                .detect_grids()
+                .into_iter()
+                .find_map(|grid| grid.decode().ok().map(|(_, content)| content))
+        })
+        .ok()
+        .flatten()
     };
     find(image.clone())
         .or_else(|| find(image::imageops::flip_horizontal(image)))
