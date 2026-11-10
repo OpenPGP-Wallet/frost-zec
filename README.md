@@ -9,6 +9,11 @@ The protocol code is a Rust library, `frost_zec`, with no dependency on any
 wallet. The `frost-zec` command-line tool below is built on it. Contributions
 are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+The QR protocol between a user's devices is specified in
+[docs/spec.md](docs/spec.md) (draft v0.1). OpenPGP Wallet's FROST tab uses it
+as the coordinator, with this tool as the test co-signer, and
+[docs/guide.md](docs/guide.md) walks through a complete spend.
+
 > **Prototype.** The key shares and `sk` are stored unencrypted in `data/` to
 > keep the code easy to read. Only use it with amounts you can afford to lose.
 
@@ -107,11 +112,19 @@ cargo run -- qr sign --as cosigner    --state cosign --via exchange
 cargo run -- qr sign --as coordinator --state coord --via exchange --pczt tx.pczt --out signed.pczt
 ```
 
-With `--via DIR`, each message is a `ur:zcash-frost/...` text file in DIR, to
-pass between machines or paste. With `--via qr`, each message is shown as an
-animated QR code in the terminal and the answer is read with the webcam;
-build with `--features camera` for that. OpenPGP Wallet's FROST tab is the
-reference coordinator, and this tool is the test co-signer.
+With `--via qr`, each message is shown as an animated QR code in the
+terminal until Enter, then the answer is read with the webcam (build with
+`--features camera`); one camera shared by both sides is enough. With
+`--via clipboard`, for a wallet on the same computer, each message goes to the
+clipboard and the answer is taken from it once copied. With `--via DIR`, each
+message is a `ur:zcash-frost/...` text file in DIR, to carry between machines.
+OpenPGP Wallet's FROST tab is the reference coordinator, and this tool is the
+test co-signer.
+
+The tests include a tamper suite ([tests/tamper.rs](tests/tamper.rs)) of
+PCZTs a dishonest coordinator could send, each refused or shown exactly as it
+will be signed, and mutation fuzzing of every decoder
+([tests/fuzz.rs](tests/fuzz.rs)); CI runs both.
 
 ## One vault, two implementations
 
@@ -127,8 +140,10 @@ cargo run -- cosign --vault vault --dir session
 
 The messages are JSON files, described in [docs/interop.md](docs/interop.md).
 A local harness running zafe-core's own key generation, signing and
-verification code checked that both sides end up with the same vault and sign
-the same transaction, in both directions.
+verification code first checked that both sides end up with the same vault
+and sign the same transaction. Then, on 2026-11-09, a 2-of-2 vault shared with
+a real Zafe member spent on Mainnet in both directions (transactions in
+[docs/interop.md](docs/interop.md)).
 
 ## Member backups
 
@@ -181,14 +196,21 @@ transaction with one spend authorization signature:
   [c3c83adc…8a52](https://mainnet.zcashexplorer.app/transactions/c3c83adc604b213f5b5c376cd44e7cb2a7be782d01704bf6925b0d3664bb8a52)
   (block 3,518,648)
 
+A spend from OpenPGP Wallet's FROST tab, with this tool as the co-signer
+over the QR protocol's messages, mined on 2026-11-10:
+[0f36cd28…3f9](https://mainnet.zcashexplorer.app/transactions/0f36cd2867d0e32108cc660cdaee8c999503b8bc82a0a4d9545683585c8f83f9)
+(block 3,558,933).
+
 ## Next steps
 
+- A standalone crate on crates.io.
+- The backup's two profiles (a passphrase-encrypted file and a mnemonic), and
+  a recovery flow that sweeps the funds to a new FROST account.
+- Specification v1.0, revised after review.
+- The member backup format as a ZIP, co-owned with aryaethn
+  ([zcash/zips#1432](https://github.com/zcash/zips/pull/1432)).
 - Keep `qsk` split 2-of-3 across the devices instead of keeping `sk`, so that
   no single device can spend through the future recovery protocol.
-- Encrypted QR codes instead of files.
-- A spend on chain from a vault shared with a Zafe member.
-- The backup format as a ZIP, co-owned with aryaethn
-  ([zcash/zips#1413](https://github.com/zcash/zips/issues/1413)).
 
 ## License
 
