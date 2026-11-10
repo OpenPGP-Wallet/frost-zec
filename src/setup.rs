@@ -26,7 +26,7 @@ use frost::keys::{KeyPackage, PublicKeyPackage};
 use minicbor::{Decode, Encode};
 use reddsa::frost::redpallas as frost;
 use zcash_protocol::consensus::NetworkType;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::cosigning::Member;
 use crate::{backup, keys, signing};
@@ -151,6 +151,12 @@ pub struct Round2Entry {
     pub package: Vec<u8>,
 }
 
+impl Drop for Round2Entry {
+    fn drop(&mut self) {
+        self.package.zeroize();
+    }
+}
+
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Reveal {
@@ -159,6 +165,12 @@ pub struct Reveal {
     #[n(2)]
     #[cbor(with = "minicbor::bytes")]
     pub contribution: [u8; 32],
+}
+
+impl Drop for Reveal {
+    fn drop(&mut self) {
+        self.contribution.zeroize();
+    }
 }
 
 #[derive(Encode, Decode, Clone)]
@@ -177,8 +189,9 @@ pub struct Round2 {
 macro_rules! cbor_bytes {
     ($t:ty) => {
         impl $t {
-            pub fn to_bytes(&self) -> Vec<u8> {
-                minicbor::to_vec(self).expect("encoding to memory cannot fail")
+            /// Round 2 holds secrets: the bytes are wiped when dropped.
+            pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+                Zeroizing::new(minicbor::to_vec(self).expect("encoding to memory cannot fail"))
             }
             pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
                 Ok(minicbor::decode(bytes)?)
@@ -440,6 +453,7 @@ impl CoordinatorSetup {
         contributions.insert(COORDINATOR, self.contribution);
         let ak = signing::group_ak(&public_key_package)?;
         let sk = combine_sk(&t, &ak, &contributions);
+        contributions.values_mut().for_each(Zeroize::zeroize);
 
         let mut packages = Vec::new();
         for (to, package) in outgoing {
@@ -613,6 +627,7 @@ impl CosignerSetup {
                 self.network,
             )?);
         }
+        contributions.values_mut().for_each(Zeroize::zeroize);
         let backup = groups.pop().ok_or("member 3 missing")?;
         let cosigner = groups.pop().ok_or("member 2 missing")?;
         Ok((cosigner, backup))

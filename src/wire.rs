@@ -18,6 +18,7 @@ use std::fmt;
 use minicbor::bytes::ByteVec;
 use minicbor::{Decode, Encode};
 use rand10::rand_core::CryptoRng;
+use zeroize::Zeroizing;
 
 use crate::channel::{self, NONCE_SIZE, PAIRING_ID_SIZE, Pairing};
 
@@ -286,8 +287,12 @@ impl Message {
     }
 
     /// Opens a sealed message of the expected inner kind. Returns the session
-    /// id it is bound to and the plaintext.
-    pub fn open(&self, pairing: &Pairing, inner_kind: u8) -> Result<(Vec<u8>, Vec<u8>), WireError> {
+    /// id it is bound to and the plaintext, wiped when dropped.
+    pub fn open(
+        &self,
+        pairing: &Pairing,
+        inner_kind: u8,
+    ) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), WireError> {
         self.expect(kind::SEALED)?;
         let body: SealedBody = decode(&self.body)?;
         if body.pairing != pairing.id() {
@@ -523,7 +528,10 @@ mod tests {
         let carried = through_qr(&encode_payload(&[sealed]), 300);
         let message = &decode_payload(&carried).unwrap()[0];
         let (session, plaintext) = message.open(&cosigner, kind::SIGN_REQUEST).unwrap();
-        assert_eq!((session.as_slice(), plaintext), (b"s1".as_slice(), big));
+        assert_eq!(
+            (session.as_slice(), plaintext.as_slice()),
+            (b"s1".as_slice(), big.as_slice())
+        );
         // The kind is bound: the same message cannot be opened as another kind.
         assert_eq!(
             message.open(&cosigner, kind::SIGN_REPLY),

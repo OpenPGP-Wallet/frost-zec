@@ -38,7 +38,7 @@ use x_wing::{
     CIPHERTEXT_SIZE, Ciphertext, DecapsulationKeyRejectNonContrib, ENCAPSULATION_KEY_SIZE,
     EncapsulationKey,
 };
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The protocol version carried in every message and bound into every hash.
 pub const VERSION: u8 = 0;
@@ -466,8 +466,14 @@ impl Pairing {
         Sealed { nonce, ciphertext }
     }
 
-    /// Opens a message from the other device.
-    pub fn open(&self, kind: u8, session: &[u8], sealed: &Sealed) -> Result<Vec<u8>, ChannelError> {
+    /// Opens a message from the other device. The plaintext may hold secrets
+    /// (DKG round 2), so it is wiped when dropped.
+    pub fn open(
+        &self,
+        kind: u8,
+        session: &[u8],
+        sealed: &Sealed,
+    ) -> Result<Zeroizing<Vec<u8>>, ChannelError> {
         // Session ids are short; a longer one cannot be in the associated data.
         if session.len() > usize::from(u8::MAX) {
             return Err(ChannelError::Authentication);
@@ -482,12 +488,13 @@ impl Pairing {
                     aad: &aad,
                 },
             )
+            .map(Zeroizing::new)
             .map_err(|_| ChannelError::Authentication)
     }
 
     /// Secret: the two keys. Store it encrypted.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(2 + PAIRING_ID_SIZE + 64);
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut bytes = Zeroizing::new(Vec::with_capacity(2 + PAIRING_ID_SIZE + 64));
         bytes.push(VERSION);
         bytes.push(self.role.direction_byte());
         bytes.extend_from_slice(&self.id);
@@ -554,12 +561,12 @@ mod tests {
         let mut rng = rng();
         let sealed = initiator.seal(7, b"session", b"to the co-signer", &mut rng);
         assert_eq!(
-            responder.open(7, b"session", &sealed).unwrap(),
+            responder.open(7, b"session", &sealed).unwrap().as_slice(),
             b"to the co-signer"
         );
         let sealed = responder.seal(8, b"", b"to the coordinator", &mut rng);
         assert_eq!(
-            initiator.open(8, b"", &sealed).unwrap(),
+            initiator.open(8, b"", &sealed).unwrap().as_slice(),
             b"to the coordinator"
         );
     }
@@ -677,7 +684,10 @@ mod tests {
         let restored = Pairing::from_bytes(&responder.to_bytes()).unwrap();
         let mut rng = rng();
         let sealed = initiator.seal(3, b"", b"after a restart", &mut rng);
-        assert_eq!(restored.open(3, b"", &sealed).unwrap(), b"after a restart");
+        assert_eq!(
+            restored.open(3, b"", &sealed).unwrap().as_slice(),
+            b"after a restart"
+        );
         assert!(Pairing::from_bytes(&responder.to_bytes()[1..]).is_err());
     }
 }

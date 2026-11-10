@@ -236,7 +236,7 @@ fn vectors_match_the_spec() {
         .confirm()
         .open(kind::SIGN_REQUEST, &session, &sealed)
         .unwrap();
-    assert_eq!(opened, plaintext);
+    assert_eq!(opened.as_slice(), plaintext.as_slice());
 
     // § 2: wire encodings.
     let w = &v["wire"];
