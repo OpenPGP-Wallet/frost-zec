@@ -521,12 +521,9 @@ impl Reply {
                 session: wire.session,
                 member,
                 // Shown to the user: keep it short and free of control characters.
-                reason: reason
-                    .chars()
-                    .take(MAX_REASON)
-                    .collect::<String>()
-                    .escape_debug()
-                    .to_string(),
+                reason: crate::check::printable(
+                    &reason.chars().take(MAX_REASON).collect::<String>(),
+                ),
             }),
             _ => Err("a reply holds either shares or a refusal".into()),
         }

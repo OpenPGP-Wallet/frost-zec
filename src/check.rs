@@ -301,16 +301,49 @@ pub fn analyze(
     Ok(Report { lines, warnings })
 }
 
-/// The memo as ZIP 302 defines it, made safe to show: control and
-/// direction-changing characters are escaped, so a memo cannot rewrite the
-/// lines around it on screen.
+/// Text from a transaction or from another device, made safe to show:
+/// control characters, and characters that reorder or hide text, are escaped
+/// (`\n`, `\u{202e}`), so the text cannot draw fake lines or rewrite the ones
+/// around it. Everything else stays as it is, accents and quotes included.
+pub fn printable(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() || reorders_or_hides(c) {
+            shown.extend(c.escape_default());
+        } else {
+            shown.push(c);
+        }
+    }
+    shown
+}
+
+/// Invisible format characters: soft hyphen, direction marks, embeddings,
+/// overrides and isolates, zero-width characters, the byte order mark,
+/// interlinear annotations and tags.
+fn reorders_or_hides(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
+/// The memo as ZIP 302 defines it, made safe to show with [`printable`].
 pub fn describe_memo(memo: &[u8; 512]) -> String {
     match memo[0] {
         0xF6 if memo[1..].iter().all(|b| *b == 0) => "no memo".into(),
         0x00..=0xF4 => {
             let end = memo.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
             match std::str::from_utf8(&memo[..end]) {
-                Ok(text) => format!("memo: \"{}\"", text.escape_debug()),
+                Ok(text) => format!("memo: \"{}\"", printable(text)),
                 Err(_) => "memo: text that is not valid UTF-8".into(),
             }
         }
@@ -336,11 +369,20 @@ mod tests {
             "{shown}"
         );
         assert!(shown.starts_with("memo: \"invoice 42"));
+        assert!(shown.contains("\\u{202e}gnp.exe\\nPAY 0"), "{shown}");
         memo[0] = 0xFF;
         assert_eq!(describe_memo(&memo), "memo: binary data (type 0xff)");
         let mut memo = [0u8; 512];
         memo[..2].copy_from_slice(&[0xC3, 0x28]);
         assert_eq!(describe_memo(&memo), "memo: text that is not valid UTF-8");
+    }
+
+    #[test]
+    fn printable_text_keeps_quotes_and_accents() {
+        assert_eq!(printable("l'été \"ok\" ❤️"), "l'été \"ok\" ❤️");
+        assert_eq!(printable("a\tb\r\nc"), "a\\tb\\r\\nc");
+        assert_eq!(printable("\u{1b}[2J"), "\\u{1b}[2J");
+        assert_eq!(printable("x\u{200b}y\u{2067}z"), "x\\u{200b}y\\u{2067}z");
     }
 
     #[test]

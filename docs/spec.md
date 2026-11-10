@@ -230,7 +230,8 @@ Already implemented in `src/check.rs`, before any signature:
   (change) are decrypted with its incoming viewing key, as its wallet will when
   scanning; payments are read back with the group's outgoing viewing key, so
   coordinators must encrypt payments to it. The memo shown comes from that
-  decryption, with control and direction-changing characters escaped;
+  decryption, with control characters and characters that reorder or hide
+  text escaped (quotes and accents are shown as they are);
 - a non-zero lock time is shown;
 - a transaction that never expires is refused; the device warns that a v6
   signature does not prove the spent notes exist, and authorizes these exact
