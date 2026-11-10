@@ -142,9 +142,11 @@ reflected to its sender, replayed under another kind or session, or sent by
 another pairing fails authentication.
 
 The pairing keys are long-term secrets: each device stores them encrypted,
-like its key share. The pairing has no forward secrecy beyond that: someone
-who steals a device can read recorded messages, but that device already holds
-its share and `sk`.
+like its key share. (OpenPGP Wallet does, under a key derived from its seed;
+the test co-signer in this crate keeps its whole state unencrypted, which is
+why it is for test amounts only.) The pairing has no forward secrecy beyond
+that: someone who steals a device can read recorded messages, but that device
+already holds its share and `sk`.
 
 ## 4. Key generation
 
@@ -255,13 +257,25 @@ random and feeds them to the code that reads them, a co-signer reviewing a
 request and a coordinator taking a reply included: no input may panic or take
 long.
 
-## 7. Backup *(Milestone 2)*
+## 7. Backup
 
-A member is backed up as a member backup string (zcash/zips#1432), which holds
-its identifier, `t`, `n`, signing share and `sk`. Because the string holds
-`sk`, it is never stored or sent under public-key encryption that relies on
-discrete logarithms; the planned profiles are a passphrase-encrypted file and a
-mnemonic.
+A member is backed up as a member backup string, specified by the FROST member
+backup ZIP draft (zcash/zips#1432), whose version 1 is Zkool's `zkfrost`
+string. It is Bech32m with the human-readable part `zkfrost`, over 68 bytes:
+
+    version (1) || identifier (1) || t (1) || n (1) || signing share (32) || sk (32)
+
+The identifier must be from 1 to `n`, and `t` from 2 to `n`. Restoring a member
+also takes the group's unified full viewing key: `sk` and the group key must
+give that viewing key, which also tells whether the group derives its keys per
+ZIP 2005 or with Zkool's older derivation. That proves the string and the
+viewing key go together, not that the share belongs to the group, which only
+the group's public key package can confirm. Implemented in `src/backup.rs`; the
+ZIP's test vectors pass with this crate and with Zkool's own code.
+
+Because the string holds `sk`, it is never stored or sent under public-key
+encryption that relies on discrete logarithms. Milestone 2 adds two profiles
+for keeping it: a passphrase-encrypted file and a mnemonic.
 
 ## 8. Test vectors
 
