@@ -89,6 +89,30 @@ from the session directory once read, and the other files when the session
 ends. `cosign --yes` skips the human approval and exists only for automated
 tests.
 
+## The QR protocol (spec draft v0.1)
+
+[`docs/spec.md`](docs/spec.md) specifies how two devices of one user share a
+FROST 2-of-3 account: pairing with a six-digit code, key generation, the
+signing session and the co-signer's checks, with test vectors. The library
+implements it (`channel`, `wire`, `setup`, `cosigning`), and the `qr`
+commands play either side, so the protocol can be tried without the app:
+
+```bash
+# Coordinator and co-signer, in two terminals (or on two machines)
+cargo run -- qr setup --as coordinator --network test --state coord --via exchange
+cargo run -- qr setup --as cosigner    --network test --state cosign --via exchange
+
+# A signing session; the co-signer shows the payment and asks for approval
+cargo run -- qr sign --as cosigner    --state cosign --via exchange
+cargo run -- qr sign --as coordinator --state coord --via exchange --pczt tx.pczt --out signed.pczt
+```
+
+With `--via DIR`, each message is a `ur:zcash-frost/...` text file in DIR, to
+pass between machines or paste. With `--via qr`, each message is shown as an
+animated QR code in the terminal and the answer is read with the webcam;
+build with `--features camera` for that. OpenPGP Wallet's FROST tab is the
+reference coordinator, and this tool is the test co-signer.
+
 ## One vault, two implementations
 
 `interop dkg` creates a vault together with members running other software,
