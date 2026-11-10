@@ -204,7 +204,9 @@ Already implemented in `src/check.rs`, before any signature:
 
 - the PCZT spends only Ironwood notes of this group. Any transparent, Sapling
   or Orchard part is refused: the signature covers it, and value spent from the
-  group and paid out there would only look like a larger fee;
+  group and paid out there would only look like a larger fee. (The Orchard pool
+  has refused new value since NU6.3, so such a transaction would not be mined
+  today; the co-signer does not rely on consensus to show the truth.);
 - for every action: the spent note's nullifier and the randomized key `rk` are
   recomputed from the note and the group's full viewing key; the output note
   commitment and the value commitment are recomputed; a dummy spend must
