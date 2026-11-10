@@ -46,6 +46,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo test --release --locked --test extract -- --ignored
 
+      # Mutated messages through every decoder an attacker can reach, with a
+      # new seed each run (printed, to replay a failure).
+      - name: Fuzzing (release, 60 s)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          FUZZ_SECS: "60"
+          FUZZ_SEED: ${{ github.run_number }}
+        run: cargo test --release --locked --test fuzz -- --ignored --nocapture
+
       - name: Library without the command-line tool
         run: cargo clippy --locked --lib --no-default-features -- -D warnings
 

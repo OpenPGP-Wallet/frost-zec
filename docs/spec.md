@@ -250,6 +250,10 @@ Already implemented in `src/check.rs`, before any signature:
 The tamper suite (`tests/tamper.rs`, run in CI) builds PCZTs a dishonest
 coordinator could send and checks that each one is refused or shown exactly as
 it will be signed, including every single-field redaction of every action.
+`tests/fuzz.rs`, also run in CI, mutates valid messages of every kind at
+random and feeds them to the code that reads them, a co-signer reviewing a
+request and a coordinator taking a reply included: no input may panic or take
+long.
 
 ## 7. Backup *(Milestone 2)*
 
