@@ -11,6 +11,7 @@
 //! pairing code, and sealed messages by their authentication tag, so a message
 //! assembled from forged parts is refused one layer up.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
@@ -25,8 +26,11 @@ pub const UR_TYPE: &str = "zcash-frost";
 /// The largest payload a reader accepts, after reassembly (a PCZT for a few
 /// spends is well under this).
 pub const MAX_PAYLOAD_SIZE: usize = 512 * 1024;
-/// The most fragments a reader accepts for one payload.
-pub const MAX_FRAGMENTS: usize = 4096;
+/// The most fragments a reader accepts for one payload. The fountain decoder's
+/// work grows with the cube of the fragment count when parts are crafted, so
+/// this stays well above what a real message needs (a few hundred at most)
+/// and well below what would let one stream stall a reader.
+pub const MAX_FRAGMENTS: usize = 1024;
 /// Session identifiers are short.
 pub const MAX_SESSION_SIZE: usize = 32;
 
@@ -351,11 +355,17 @@ pub fn single_part(payload: &[u8]) -> Result<String, WireError> {
 #[derive(Default)]
 pub struct Reader {
     decoder: ur::Decoder,
+    /// The sequence numbers of the parts taken so far.
+    sequences: BTreeSet<u32>,
 }
 
 impl Reader {
     /// Takes one scanned part. Returns the payload once complete.
     pub fn receive(&mut self, part: &str) -> Result<Option<Vec<u8>>, WireError> {
+        // Two characters per byte, plus the prefix and a checksum.
+        if part.len() > 2 * MAX_PAYLOAD_SIZE + 64 {
+            return Err(WireError::TooLarge);
+        }
         let part = part.trim().to_ascii_lowercase();
         let ur_type = part
             .strip_prefix("ur:")
@@ -364,14 +374,19 @@ impl Reader {
         if ur_type != UR_TYPE {
             return Err(WireError::WrongUrType(ur_type.to_string()));
         }
-        // A short payload fits in a single part.
-        if let Ok((ur::ur::Kind::SinglePart, payload)) = ur::decode(&part) {
-            return check_size(payload).map(Some);
+        let header = match ur::decode(&part).map_err(malformed)? {
+            // A short payload fits in a single part.
+            (ur::ur::Kind::SinglePart, payload) => return check_size(payload).map(Some),
+            (ur::ur::Kind::MultiPart, cbor) => PartHeader::check(&cbor)?,
+        };
+        let new = !self.sequences.contains(&header.sequence);
+        if new && self.sequences.len() >= max_parts(header.count) {
+            return Err(WireError::Malformed(
+                "the QR stream does not complete: scan it again".into(),
+            ));
         }
         self.decoder.receive(&part).map_err(malformed)?;
-        if self.decoder.fragment_count() > MAX_FRAGMENTS {
-            return Err(WireError::TooManyFragments);
-        }
+        self.sequences.insert(header.sequence);
         if !self.decoder.complete() {
             return Ok(None);
         }
@@ -387,6 +402,62 @@ impl Reader {
             self.decoder.resolved_fragment_count().unwrap_or(0),
             self.decoder.fragment_count(),
         )
+    }
+}
+
+/// How many different parts a stream may take without completing. An honest
+/// fountain stream completes after little more than one part per fragment;
+/// every part kept costs the decoder memory and time.
+fn max_parts(fragments: usize) -> usize {
+    2 * fragments + 32
+}
+
+/// The header of one fountain-coded part, checked before the `ur` decoder
+/// sees the part. That decoder sizes its work by the fragment count a part
+/// announces: for a mixed part it builds a table with one entry per fragment
+/// and shuffles it in quadratic time, so a single crafted part announcing
+/// millions of fragments would stall the reader for minutes or exhaust its
+/// memory before any limit could be checked on the decoder.
+struct PartHeader {
+    sequence: u32,
+    count: usize,
+}
+
+impl PartHeader {
+    fn check(cbor: &[u8]) -> Result<PartHeader, WireError> {
+        let (sequence, count, message_length, fragment_length) =
+            PartHeader::read(cbor).map_err(malformed)?;
+        let (count, message_length) = (count as usize, message_length as usize);
+        if count > MAX_FRAGMENTS {
+            return Err(WireError::TooManyFragments);
+        }
+        if message_length > MAX_PAYLOAD_SIZE {
+            return Err(WireError::TooLarge);
+        }
+        // An encoder cuts the message into fragments of one length and pads
+        // the last one, so count = ceil(message length / fragment length).
+        if fragment_length == 0
+            || fragment_length > message_length
+            || count != message_length.div_ceil(fragment_length)
+        {
+            return Err(WireError::Malformed("inconsistent QR part".into()));
+        }
+        Ok(PartHeader { sequence, count })
+    }
+
+    /// `[sequence, count, message length, checksum, fragment]`, as UR encodes
+    /// a part (BCR-2020-005).
+    fn read(cbor: &[u8]) -> Result<(u32, u32, u32, usize), minicbor::decode::Error> {
+        let mut decoder = minicbor::Decoder::new(cbor);
+        if decoder.array()? != Some(5) {
+            return Err(minicbor::decode::Error::message("not a QR part"));
+        }
+        let sequence = decoder.u32()?;
+        let count = decoder.u32()?;
+        let message_length = decoder.u32()?;
+        let _checksum = decoder.u32()?;
+        let fragment_length = decoder.bytes()?.len();
+        Ok((sequence, count, message_length, fragment_length))
     }
 }
 
@@ -467,6 +538,103 @@ mod tests {
         let mut reader = Reader::default();
         reader.receive(&first.next_part().unwrap()).unwrap();
         assert!(reader.receive(&second.next_part().unwrap()).is_err());
+    }
+
+    /// A multi-part UR with the given part header and fragment.
+    fn crafted_part(sequence: u32, count: u32, message_length: u32, fragment: &[u8]) -> String {
+        let mut cbor = Vec::new();
+        minicbor::Encoder::new(&mut cbor)
+            .array(5)
+            .and_then(|e| e.u32(sequence))
+            .and_then(|e| e.u32(count))
+            .and_then(|e| e.u32(message_length))
+            .and_then(|e| e.u32(0x1234_5678))
+            .and_then(|e| e.bytes(fragment))
+            .unwrap();
+        format!(
+            "ur:{UR_TYPE}/{sequence}-{count}/{}",
+            ur::bytewords::encode(&cbor, ur::bytewords::Style::Minimal)
+        )
+    }
+
+    #[test]
+    fn a_part_announcing_millions_of_fragments_is_refused_before_decoding() {
+        // Given to the ur decoder, the first stalls it for minutes and the
+        // second exhausts memory: a mixed part makes it build and shuffle a
+        // table as long as the announced count.
+        for count in [1_000_000, u32::MAX - 1] {
+            let part = crafted_part(count + 1, count, count, &[7]);
+            assert_eq!(
+                Reader::default().receive(&part),
+                Err(WireError::TooManyFragments)
+            );
+        }
+    }
+
+    #[test]
+    fn a_part_with_an_inconsistent_header_is_refused() {
+        let mut reader = Reader::default();
+        let max = MAX_PAYLOAD_SIZE as u32;
+        // A fragment longer than the message, a count that does not match
+        // the message and fragment lengths, a message over the limit.
+        for part in [
+            crafted_part(1, 1, 1, &[1, 2]),
+            crafted_part(1, 3, 10, &[1, 2]),
+            crafted_part(2, 1, 10, &[]),
+        ] {
+            assert!(matches!(
+                reader.receive(&part),
+                Err(WireError::Malformed(_))
+            ));
+        }
+        assert_eq!(
+            reader.receive(&crafted_part(1, 1024, max + 1024, &[0; 513])),
+            Err(WireError::TooLarge)
+        );
+        assert_eq!(
+            reader.receive(&format!(
+                "ur:{UR_TYPE}/{}",
+                "a".repeat(2 * MAX_PAYLOAD_SIZE + 64)
+            )),
+            Err(WireError::TooLarge)
+        );
+        // An honest stream still goes through the same reader afterwards.
+        let payload = [9u8; 3_000];
+        let mut honest = encoder(&payload, 100).unwrap();
+        let done = loop {
+            if let Some(done) = reader.receive(&honest.next_part().unwrap()).unwrap() {
+                break done;
+            }
+        };
+        assert_eq!(done, payload);
+    }
+
+    #[test]
+    fn a_stream_that_does_not_complete_is_refused() {
+        // Mixed parts of degree 2 or more and no simple part: nothing ever
+        // resolves, so the decoder would keep every part it is given.
+        let count = 32;
+        let mut parts = (count + 1..).filter_map(|sequence| {
+            let part = crafted_part(sequence, count, count, &[1]);
+            let (_, cbor) = ur::decode(&part).unwrap();
+            let degree = minicbor::decode::<ur::fountain::Part>(&cbor)
+                .unwrap()
+                .indexes()
+                .len();
+            (degree >= 2).then_some(part)
+        });
+        let mut reader = Reader::default();
+        let first = parts.next().unwrap();
+        assert_eq!(reader.receive(&first), Ok(None));
+        for _ in 1..max_parts(count as usize) {
+            assert_eq!(reader.receive(&parts.next().unwrap()), Ok(None));
+        }
+        assert!(matches!(
+            reader.receive(&parts.next().unwrap()),
+            Err(WireError::Malformed(_))
+        ));
+        // A part seen before is not a new one.
+        assert_eq!(reader.receive(&first), Ok(None));
     }
 
     #[test]

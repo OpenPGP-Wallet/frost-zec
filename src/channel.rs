@@ -426,6 +426,10 @@ impl Pairing {
 
     /// Seals a message from this device. `kind` and `session` are bound to it:
     /// the other side must open it with the same values.
+    ///
+    /// # Panics
+    ///
+    /// If `session` is longer than 255 bytes.
     pub fn seal<R: CryptoRng + ?Sized>(
         &self,
         kind: u8,
@@ -464,6 +468,10 @@ impl Pairing {
 
     /// Opens a message from the other device.
     pub fn open(&self, kind: u8, session: &[u8], sealed: &Sealed) -> Result<Vec<u8>, ChannelError> {
+        // Session ids are short; a longer one cannot be in the associated data.
+        if session.len() > usize::from(u8::MAX) {
+            return Err(ChannelError::Authentication);
+        }
         let aad = self.associated_data(self.role.other(), kind, session);
         let cipher = XChaCha20Poly1305::new(&self.receive_key.into());
         cipher
@@ -572,6 +580,11 @@ mod tests {
         );
         assert_eq!(
             responder.open(1, b"s2", &sealed),
+            Err(ChannelError::Authentication)
+        );
+        // A session id longer than any sender can bind is refused, not a panic.
+        assert_eq!(
+            responder.open(1, &[0; 256], &sealed),
             Err(ChannelError::Authentication)
         );
         let mut modified = sealed.clone();

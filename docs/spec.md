@@ -52,8 +52,14 @@ every message is sealed (§ 3.4) and its body is
 | 49 | sign-request | sealed |
 | 50 | sign-reply | sealed |
 
-A reader refuses a payload over 512 KiB or a stream of more than 4096
-fragments, other UR types and unknown versions. UR checks that parts belong
+A reader refuses a payload over 512 KiB or a stream of more than 1024
+fragments, other UR types and unknown versions. It checks the header of each
+part before decoding it: the fragment count must be the message length divided
+by the fragment length, rounded up, and a stream of n fragments that has not
+completed after 2n + 32 different parts is refused. A fountain decoder spends
+time and memory in proportion to the fragment count a part announces, so
+without these checks one crafted part announcing millions of fragments stalls
+it for minutes or exhausts its memory. UR checks that parts belong
 together with a CRC-32, which a forger can match; that is enough here, because
 a payload assembled from forged parts fails one layer up, on the pairing code
 or on a sealed message's authentication tag.
