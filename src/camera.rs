@@ -1,8 +1,9 @@
 //! Reading the protocol's QR codes from a camera (feature `camera`).
 //!
-//! Frames come from the first camera; `rqrr` finds a QR code in each, and the
-//! UR parts go to [`wire::Reader`] until the payload is whole. Frames with no
-//! code, other UR types or parts of another stream are skipped.
+//! Frames come from the first camera; ZXing's reader (`rxing`), then `rqrr`,
+//! finds a QR code in each, and the UR parts go to [`wire::Reader`] until the
+//! payload is whole. Frames with no code, other UR types or parts of another
+//! stream are skipped.
 
 use std::error::Error;
 use std::fmt;
@@ -35,13 +36,36 @@ pub enum Progress {
     Fragments(usize, usize),
 }
 
-/// Finds and decodes a QR code in a grayscale image. Some cameras mirror or
-/// flip their frames, and a mirrored QR code does not decode, so the flipped
-/// images are tried too.
+/// Finds and decodes a QR code in a grayscale image.
+///
+/// ZXing's reader (`rxing`) goes first: on webcam frames of a screen it reads
+/// codes from about 2.5 camera pixels per module, where `rqrr` needs 4 to 5
+/// (`examples/qr_bench.rs`), and it is faster. `rqrr` stays as a fallback.
+/// Some cameras mirror their frames, and a mirrored QR code does not decode,
+/// so the mirrored image is tried too. So are inverted codes (light on dark),
+/// as a terminal with a light background shows the co-signer's.
 pub fn detect(image: &image::GrayImage) -> Option<String> {
-    // Whatever is in front of the camera is decoded: a frame the decoder
-    // fails on, even by panicking, is skipped like a frame with no code.
-    let find = |image: image::GrayImage| {
+    // Whatever is in front of the camera is decoded: a frame a decoder fails
+    // on, even by panicking, is skipped like a frame with no code.
+    let zxing = |image: &image::GrayImage| {
+        std::panic::catch_unwind(|| {
+            rxing::helpers::detect_in_luma_slice_with_hints(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                Some(rxing::BarcodeFormat::QR_CODE),
+                &mut rxing::DecodeHints {
+                    AlsoInverted: Some(true),
+                    ..Default::default()
+                },
+            )
+            .ok()
+            .map(|result| result.getText().to_string())
+        })
+        .ok()
+        .flatten()
+    };
+    let rqrr = |image: image::GrayImage| {
         std::panic::catch_unwind(move || {
             let mut prepared = rqrr::PreparedImage::prepare(image);
             prepared
@@ -52,9 +76,11 @@ pub fn detect(image: &image::GrayImage) -> Option<String> {
         .ok()
         .flatten()
     };
-    find(image.clone())
-        .or_else(|| find(image::imageops::flip_horizontal(image)))
-        .or_else(|| find(image::imageops::flip_vertical(image)))
+    let mirrored = image::imageops::flip_horizontal(image);
+    zxing(image)
+        .or_else(|| zxing(&mirrored))
+        .or_else(|| rqrr(image.clone()))
+        .or_else(|| rqrr(mirrored))
 }
 
 /// A camera frame as a grayscale image: luma from YUYV (every other byte) and
@@ -92,12 +118,8 @@ pub fn to_luma(
         .ok_or_else(|| format!("a {format:?} frame of the wrong size").into())
 }
 
-/// Reads one payload from the first camera. Returns `None` if `cancel` is set
-/// before the payload is whole.
-pub fn scan(
-    cancel: &AtomicBool,
-    mut progress: impl FnMut(Progress),
-) -> Result<Option<Vec<u8>>, CameraError> {
+/// The first camera, streaming at its highest resolution, and its name.
+fn open() -> Result<(nokhwa::Camera, String), CameraError> {
     use nokhwa::pixel_format::RgbFormat;
     use nokhwa::utils::{ApiBackend, RequestedFormat, RequestedFormatType};
 
@@ -110,26 +132,39 @@ pub fn scan(
     )
     .map_err(fail)?;
     camera.open_stream().map_err(fail)?;
-    progress(Progress::Camera(info.human_name()));
+    Ok((camera, info.human_name()))
+}
+
+/// The next frame of `camera`, in grayscale.
+fn next_frame(camera: &mut nokhwa::Camera) -> Result<image::GrayImage, CameraError> {
+    let frame = camera.frame().map_err(fail)?;
+    let resolution = frame.resolution();
+    to_luma(
+        frame.source_frame_format(),
+        resolution.width_x,
+        resolution.height_y,
+        frame.buffer(),
+    )
+    .map_err(fail)
+}
+
+/// Reads one payload from the first camera. Returns `None` if `cancel` is set
+/// before the payload is whole.
+pub fn scan(
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(Progress),
+) -> Result<Option<Vec<u8>>, CameraError> {
+    let (mut camera, name) = open()?;
+    progress(Progress::Camera(name));
     let mut reader = wire::Reader::default();
     let mut last = (0, 0);
     let result = loop {
         if cancel.load(Ordering::Relaxed) {
             break Ok(None);
         }
-        let frame = match camera.frame() {
-            Ok(frame) => frame,
-            Err(e) => break Err(fail(e)),
-        };
-        let resolution = frame.resolution();
-        let image = match to_luma(
-            frame.source_frame_format(),
-            resolution.width_x,
-            resolution.height_y,
-            frame.buffer(),
-        ) {
+        let image = match next_frame(&mut camera) {
             Ok(image) => image,
-            Err(e) => break Err(fail(e)),
+            Err(e) => break Err(e),
         };
         if let Some(text) = detect(&image) {
             if let Ok(Some(payload)) = reader.receive(&text) {
@@ -144,6 +179,69 @@ pub fn scan(
     };
     let _ = camera.stop_stream();
     result
+}
+
+/// What [`test`] saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestReport {
+    /// The camera used.
+    pub camera: String,
+    /// The frame size it delivers.
+    pub width: u32,
+    /// The frame height.
+    pub height: u32,
+    /// Frames read.
+    pub frames: usize,
+    /// Frames in which a QR code was decoded.
+    pub decoded: usize,
+}
+
+/// For a camera that does not seem to read the codes: streams the first
+/// camera for `seconds`, calls `seen` with every QR code decoded, and saves
+/// one frame per second as a JPEG file in `save`, if given, to look at what
+/// the camera sees.
+pub fn test(
+    seconds: u64,
+    save: Option<&std::path::Path>,
+    mut seen: impl FnMut(&str),
+) -> Result<TestReport, CameraError> {
+    use std::time::{Duration, Instant};
+    let (mut camera, name) = open()?;
+    let mut report = TestReport {
+        camera: name,
+        width: 0,
+        height: 0,
+        frames: 0,
+        decoded: 0,
+    };
+    let start = Instant::now();
+    let mut next_save = start;
+    let result = loop {
+        if start.elapsed() > Duration::from_secs(seconds) {
+            break Ok(());
+        }
+        let image = match next_frame(&mut camera) {
+            Ok(image) => image,
+            Err(e) => break Err(e),
+        };
+        (report.width, report.height) = image.dimensions();
+        report.frames += 1;
+        if let Some(text) = detect(&image) {
+            report.decoded += 1;
+            seen(&text);
+        }
+        if let Some(dir) = save
+            && Instant::now() >= next_save
+        {
+            next_save += Duration::from_secs(1);
+            let file = dir.join(format!("frame-{:04}.jpg", report.frames));
+            if let Err(e) = image.save(&file) {
+                break Err(fail(format!("cannot save {}: {e}", file.display())));
+            }
+        }
+    };
+    let _ = camera.stop_stream();
+    result.map(|()| report)
 }
 
 #[cfg(test)]
@@ -175,6 +273,46 @@ mod tests {
             }
         }
         panic!("the payload never completed");
+    }
+
+    /// A part the size a 640x480 webcam sees on a screen across the room:
+    /// 2.6 pixels per module, blurred by resampling. rqrr alone reads none of
+    /// these (examples/qr_bench.rs); ZXing's reader does.
+    #[cfg(feature = "camera")]
+    #[test]
+    fn a_small_blurred_code_is_read() {
+        let part = wire::encoder(&[3u8; 2_000], FRAGMENT)
+            .unwrap()
+            .next_part()
+            .unwrap();
+        let code = QrCode::new(part.to_ascii_uppercase())
+            .unwrap()
+            .render::<image::Luma<u8>>()
+            .module_dimensions(8, 8)
+            .build();
+        let side = code.width() * 26 / 80;
+        let small =
+            image::imageops::resize(&code, side, side, image::imageops::FilterType::Triangle);
+        let small = image::imageops::blur(&small, 0.7);
+        assert_eq!(detect(&small).unwrap().to_ascii_lowercase(), part);
+    }
+
+    /// Light modules on a dark background, as a terminal with a light theme
+    /// shows the co-signer's codes.
+    #[cfg(feature = "camera")]
+    #[test]
+    fn an_inverted_code_is_read() {
+        let part = wire::encoder(&[5u8; 50], FRAGMENT)
+            .unwrap()
+            .next_part()
+            .unwrap();
+        let mut code = QrCode::new(part.to_ascii_uppercase())
+            .unwrap()
+            .render::<image::Luma<u8>>()
+            .module_dimensions(4, 4)
+            .build();
+        image::imageops::invert(&mut code);
+        assert_eq!(detect(&code).unwrap().to_ascii_lowercase(), part);
     }
 
     #[cfg(feature = "camera")]
