@@ -31,6 +31,8 @@
 //! app. `--as N` uses participant N of the group in data/; `--vault DIR` uses a
 //! seat created with `interop dkg`.
 
+mod qrcli;
+mod qrview;
 mod store;
 
 use frost_zec::{backup, check, dkg, interop, keys, pczt_io, session, signing};
@@ -81,9 +83,10 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("backup") if args.get(1).map(String::as_str) == Some("restore") => {
             backup_restore(&args[2..])
         }
+        Some("qr") => qrcli::run(&args[1..]),
         _ => {
             eprintln!(
-                "usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg | backup export | backup restore> [options]\nsee the comment at the top of src/main.rs for the options"
+                "usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg | backup export | backup restore | qr> [options]\nsee the comment at the top of src/main.rs for the options"
             );
             Ok(())
         }

@@ -179,25 +179,128 @@ fn a_pczt_that_skipped_the_io_finalizer_is_refused() {
     assert!(analyze(&build(&group(), tx)).is_err());
 }
 
-#[test]
-fn a_claimed_address_label_is_never_shown() {
-    let pczt = build(&group(), honest(&group(), MemoBytes::empty()));
+/// A unified address with several receivers, as wallets hand them out: the
+/// given Orchard receiver and a transparent one.
+fn invoice_address(orchard: &orchard::Address, network: NetworkType) -> String {
+    invoice_address_in(zcash_address::unified::Revision::R0, orchard, network)
+}
+
+/// The same in a given revision of the encoding (Revision 2 gives `tu1…`).
+fn invoice_address_in(
+    revision: zcash_address::unified::Revision,
+    orchard: &orchard::Address,
+    network: NetworkType,
+) -> String {
+    use zcash_address::unified::{self, Encoding};
+    unified::Address::try_from_items(
+        revision,
+        vec![
+            unified::Uitem::Data(unified::Receiver::Orchard(orchard.to_raw_address_bytes())),
+            unified::Uitem::Data(unified::Receiver::P2pkh([7; 20])),
+        ],
+    )
+    .unwrap()
+    .encode(&network)
+}
+
+/// Writes `address` as the `user_address` of every output, as
+/// zcash_client_backend does for a payment's output.
+fn named(pczt: Pczt, address: &str) -> Pczt {
     let count = action_count(&pczt);
     let mut labelled = pczt;
     for index in 0..count {
         labelled = Updater::new(labelled)
             .update_ironwood_with(|mut bundle| {
                 bundle.update_action_with(index, |mut action| {
-                    action.set_output_user_address("u1attackerlabel".into());
+                    action.set_output_user_address(address.into());
                     Ok(())
                 })
             })
             .unwrap()
             .finish();
     }
-    let shown = analyze(&labelled).unwrap().lines.join("\n");
-    assert!(!shown.contains("attackerlabel"), "{shown}");
-    assert!(shown.contains(&stranger_address()), "{shown}");
+    labelled
+}
+
+/// The user compares the co-signer's screen with the address they were given.
+/// That address usually has several receivers, so the paid receiver alone,
+/// encoded on its own, is another string: the co-signer shows the given one,
+/// once it has checked that it holds the receiver paid.
+#[test]
+fn the_address_the_user_was_given_is_shown_once_checked() {
+    let pczt = build(&group(), honest(&group(), MemoBytes::empty()));
+    let paid = stranger().address_at(0u32, Scope::External);
+    for revision in [
+        zcash_address::unified::Revision::R0,
+        zcash_address::unified::Revision::R2,
+    ] {
+        let invoice = invoice_address_in(revision, &paid, NetworkType::Main);
+        assert_ne!(invoice, stranger_address());
+        let shown = analyze(&named(pczt.clone(), &invoice))
+            .unwrap()
+            .lines
+            .join("\n");
+        assert!(
+            shown.contains(&format!("PAY 0.00400000 ZEC to {invoice}")),
+            "{shown}"
+        );
+    }
+}
+
+#[test]
+fn a_named_address_that_is_not_the_one_paid_is_refused() {
+    let pczt = build(&group(), honest(&group(), MemoBytes::empty()));
+    let attacker = invoice_address(
+        &stranger().address_at(5u32, Scope::External),
+        NetworkType::Main,
+    );
+    let other_network = invoice_address(
+        &stranger().address_at(0u32, Scope::External),
+        NetworkType::Test,
+    );
+    for label in ["u1attackerlabel", "", &attacker, &other_network] {
+        let refused = analyze(&named(pczt.clone(), label)).unwrap_err();
+        assert!(
+            refused.contains("not the one it pays"),
+            "{label}: {refused}"
+        );
+    }
+}
+
+/// A dishonest builder sets the spend's randomizer to zero and `rk` to the
+/// group key to match (it proves after the signing, so the proof follows).
+/// Every such spend would show the same `rk` on chain.
+#[test]
+fn a_zero_randomizer_is_refused() {
+    let pczt = build(&group(), honest(&group(), MemoBytes::empty()));
+    let mut found = None;
+    pczt::roles::low_level_signer::Signer::new(pczt.clone())
+        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
+            for action in bundle.actions() {
+                let spend = action.spend();
+                if spend.value().map(|v| v.inner()) == Some(SPEND) {
+                    let alpha = spend.alpha().unwrap();
+                    found = Some((
+                        ff::PrimeField::to_repr(&alpha),
+                        <[u8; 32]>::from(spend.rk()),
+                    ));
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    let (alpha, rk) = found.expect("the group's spend");
+    let ak: [u8; 32] = group().to_bytes()[..32].try_into().unwrap();
+    let mut bytes = pczt_io::serialize(pczt).unwrap();
+    for (old, new) in [(alpha, [0u8; 32]), (rk, ak)] {
+        let at = bytes
+            .windows(32)
+            .position(|window| window == old)
+            .expect("the field in the serialized PCZT");
+        bytes[at..at + 32].copy_from_slice(&new);
+    }
+    let refused = analyze(&pczt_io::parse(&bytes).unwrap()).unwrap_err();
+    assert!(refused.contains("randomizer is zero"), "{refused}");
 }
 
 fn action_count(pczt: &Pczt) -> usize {

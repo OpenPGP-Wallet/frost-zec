@@ -12,6 +12,7 @@
 
 use std::error::Error;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,6 +23,27 @@ use serde::{Deserialize, Serialize};
 pub const POLL: Duration = Duration::from_millis(300);
 /// Files may be passed by hand between two people: wait up to an hour.
 pub const TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// The largest message file read. A message holds at most a PCZT of a few
+/// hundred KiB, hex or bytewords encoded; the other side, or whatever carries
+/// the files, could otherwise make a reader load a file of any size.
+pub const MAX_FILE_SIZE: u64 = 4 * 1024 * 1024;
+
+/// Reads a message file written by the other side, refusing one larger than
+/// [`MAX_FILE_SIZE`] instead of loading it whole.
+pub fn read_message_file(path: &Path) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_FILE_SIZE + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is larger than {MAX_FILE_SIZE} bytes", path.display()),
+        ));
+    }
+    Ok(bytes)
+}
 
 pub const COMMITMENTS: &str = "commitments";
 pub const REQUEST: &str = "request";
@@ -115,7 +137,13 @@ pub const SETTLE: Duration = Duration::from_secs(2);
 pub fn wait_json<T: DeserializeOwned>(file: &Path, deadline: Instant) -> Result<T, Box<dyn Error>> {
     let mut unparsed: Option<(Vec<u8>, Instant)> = None;
     loop {
-        if let Ok(bytes) = fs::read(file) {
+        let read = read_message_file(file);
+        if let Err(error) = &read
+            && error.kind() == io::ErrorKind::InvalidData
+        {
+            return Err(error.to_string().into());
+        }
+        if let Ok(bytes) = read {
             match serde_json::from_slice(&bytes) {
                 Ok(message) => return Ok(message),
                 Err(error) => match &unparsed {
@@ -154,6 +182,22 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn an_oversized_file_is_refused_without_being_loaded() {
+        let dir = scratch("oversized");
+        let file = dir.join("request.json");
+        fs::write(&file, vec![b' '; MAX_FILE_SIZE as usize]).unwrap();
+        assert!(read_message_file(&file).is_ok());
+        fs::write(&file, vec![b' '; MAX_FILE_SIZE as usize + 1]).unwrap();
+        let error = read_message_file(&file).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // Refused at once, not after waiting for the deadline.
+        let started = Instant::now();
+        assert!(wait_json::<Message>(&file, started + Duration::from_secs(60)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// A file read halfway through its copy (cut short, or full size with zeros

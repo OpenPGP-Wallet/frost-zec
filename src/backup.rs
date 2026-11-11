@@ -12,6 +12,7 @@
 //! the same test vectors (tests/fixtures/frost-member-backup-vectors.json).
 
 use std::error::Error;
+use std::fmt;
 
 use bech32::{Bech32m, Hrp, primitives::decode::CheckedHrpstring};
 use frost::keys::{KeyPackage, PublicKeyPackage, SigningShare, VerifyingShare};
@@ -19,6 +20,7 @@ use frost::{Identifier, VerifyingKey};
 use orchard::keys::{FullViewingKey, SpendingKey};
 use reddsa::frost::redpallas as frost;
 use zcash_protocol::consensus::NetworkType;
+use zeroize::Zeroize;
 
 use crate::keys;
 
@@ -35,14 +37,34 @@ pub enum Derivation {
     Legacy,
 }
 
-/// What a version 1 string carries.
-#[derive(Debug, PartialEq, Eq)]
+/// What a version 1 string carries. Secret: wiped when dropped, and left out
+/// of its `Debug` output.
+#[derive(PartialEq, Eq)]
 pub struct Backup {
     pub id: u8,
     pub t: u8,
     pub n: u8,
     pub share: [u8; 32],
     pub sk: [u8; 32],
+}
+
+impl fmt::Debug for Backup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Backup")
+            .field("id", &self.id)
+            .field("t", &self.t)
+            .field("n", &self.n)
+            .field("share", &"<redacted>")
+            .field("sk", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for Backup {
+    fn drop(&mut self) {
+        self.share.zeroize();
+        self.sk.zeroize();
+    }
 }
 
 impl Backup {
@@ -575,5 +597,19 @@ mod tests {
             2,
         );
         assert!(Backup::new(&other, 2, &[1; 32]).is_err());
+    }
+
+    #[test]
+    fn debug_output_leaves_the_secrets_out() {
+        let backup = Backup {
+            id: 3,
+            t: 2,
+            n: 3,
+            share: [0xab; 32],
+            sk: [0xcd; 32],
+        };
+        let shown = format!("{backup:?}");
+        assert!(shown.contains("id: 3") && shown.contains("<redacted>"));
+        assert!(!shown.contains("171") && !shown.contains("205"), "{shown}");
     }
 }
