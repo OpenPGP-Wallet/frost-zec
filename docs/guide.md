@@ -135,6 +135,14 @@ The co-signer reads a file once it is complete and deletes it after use.
 - **The last setup step fails** (network, wrong password): fix the cause and
   read the co-signer's keys again; the pairing is kept.
 - **The co-signer refuses a request:** it prints why. Do not override it.
+- **A camera does not read the codes:** run `frost-zec qr camera-test` and
+  point the camera at a code the wallet shows. It prints the camera in use,
+  its frame size and rate, and every code it reads (`--save DIR` keeps a frame
+  per second, to see what the camera sees). The reader needs about 2.5 camera
+  pixels per QR module: at 640x480, let the code fill at least a third of the
+  picture, keep it in focus, and avoid reflections on the screen. A phone used
+  as a webcam (iVCam, DroidCam) streams at the resolution set in its PC
+  client: choose the highest one offered.
 
 ## What to report
 
