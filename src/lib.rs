@@ -8,6 +8,8 @@
 //!
 //! Status: prototype, not audited. Use small test amounts only.
 
+#![warn(missing_docs)]
+
 pub mod backup;
 #[cfg(feature = "camera")]
 pub mod camera;

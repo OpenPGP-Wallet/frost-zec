@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// How often a message file is looked for.
 pub const POLL: Duration = Duration::from_millis(300);
 /// Files may be passed by hand between two people: wait up to an hour.
 pub const TIMEOUT: Duration = Duration::from_secs(3600);
@@ -45,18 +46,26 @@ pub fn read_message_file(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// The commitments file name, and its `kind`.
 pub const COMMITMENTS: &str = "commitments";
+/// The request file name, and its `kind`.
 pub const REQUEST: &str = "request";
+/// The reply file name, and its `kind`.
 pub const REPLY: &str = "reply";
 
 /// Co-signer → coordinator: fresh nonce commitments, one per spend it is
 /// ready to sign. They are sent before the co-signer sees the transaction.
 #[derive(Serialize, Deserialize)]
 pub struct Commitments {
+    /// The format name, [`crate::interop::FORMAT`].
     pub format: String,
+    /// [`COMMITMENTS`].
     pub kind: String,
+    /// The session id, in hex.
     pub session: String,
+    /// The co-signer's FROST identifier, in hex.
     pub identifier: String,
+    /// Serialized signing commitments, in hex, one per spend.
     pub commitments: Vec<String>,
 }
 
@@ -65,25 +74,38 @@ pub struct Commitments {
 /// spends appear in the Ironwood bundle).
 #[derive(Serialize, Deserialize)]
 pub struct Request {
+    /// The format name, [`crate::interop::FORMAT`].
     pub format: String,
+    /// [`REQUEST`].
     pub kind: String,
+    /// The session id of the commitments it answers, in hex.
     pub session: String,
+    /// The coordinator's FROST identifier, in hex.
     pub identifier: String,
+    /// The PCZT, in hex.
     pub pczt: String,
+    /// The coordinator's serialized commitments, in hex, one per spend.
     pub commitments: Vec<String>,
 }
 
 /// Co-signer → coordinator: one signature share per spend, or the reason it refused.
 #[derive(Serialize, Deserialize)]
 pub struct Reply {
+    /// The format name, [`crate::interop::FORMAT`].
     pub format: String,
+    /// [`REPLY`].
     pub kind: String,
+    /// The session id, in hex.
     pub session: String,
+    /// The co-signer's FROST identifier, in hex.
     pub identifier: String,
+    /// Serialized signature shares, in hex, one per spend, if approved.
     pub shares: Option<Vec<String>>,
+    /// Why the co-signer refused, if it did.
     pub refused: Option<String>,
 }
 
+/// The path of the message file `name` in the exchange directory `dir`.
 pub fn path(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.json"))
 }
