@@ -95,7 +95,38 @@ fn rqrr_only(image: &GrayImage) -> Option<String> {
         .find_map(|grid| grid.decode().ok().map(|(_, content)| content))
 }
 
+/// With a screenshot as argument: the screenshot as a 640-pixel-wide camera
+/// sees it from further and further away (blurred, JPEG 40), read by each.
+fn screenshot(path: &str) {
+    let shot = image::open(path).unwrap().to_luma8();
+    println!("{path}: {}x{}", shot.width(), shot.height());
+    println!("camera covers  px/screen px   rqrr  detect");
+    for covered in [640u32, 1080, 1440, 1920, 2400] {
+        // The camera's 640 pixels span `covered` screen pixels.
+        let factor = 640.0 / covered as f32;
+        let (w, h) = (
+            (shot.width() as f32 * factor) as u32,
+            (shot.height() as f32 * factor) as u32,
+        );
+        let small = imageops::resize(&shot, w, h, imageops::FilterType::Triangle);
+        let small = imageops::blur(&small, 0.7);
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 40)
+            .encode_image(&small)
+            .unwrap();
+        let frame = image::load_from_memory(&bytes).unwrap().to_luma8();
+        println!(
+            "{covered:6} px     {factor:8.2}     {:5}  {:5}",
+            rqrr_only(&frame).is_some(),
+            camera::detect(&frame).is_some()
+        );
+    }
+}
+
 fn main() {
+    if let Some(path) = std::env::args().nth(1) {
+        return screenshot(&path);
+    }
     let payload: Vec<u8> = (0..4_000u32).map(|i| (i * 7 % 251) as u8).collect();
     let mut rng = StdRng::seed_from_u64(7);
     println!("fragment modules px/module   rqrr  detect   ({TRIALS} frames each)");
