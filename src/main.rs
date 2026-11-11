@@ -94,7 +94,7 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
 }
 
 /// Every pair of participants produces a spend authorization signature that
-/// orchard accepts under rk = ak + [alpha]G, and a single participant cannot.
+/// orchard accepts under `rk = ak + [alpha]G`, and a single participant cannot.
 fn selftest() -> Result<(), Box<dyn Error>> {
     let (key_packages, public_key_package) = dkg::run(MAX_SIGNERS, MIN_SIGNERS)?;
     let ak = signing::group_ak(&public_key_package)?;

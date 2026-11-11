@@ -1,7 +1,7 @@
 //! Re-randomized FROST signing (ZIP 312) for Orchard-protocol spends.
 //!
 //! Each spend in a PCZT carries its randomizer alpha: the spend is authorized
-//! by a RedPallas signature under rk = ak + [alpha]G, where ak is the FROST
+//! by a RedPallas signature under `rk = ak + [alpha]G`, where ak is the FROST
 //! group key. Two signers each produce a share over the transaction's sighash
 //! with that alpha, and the coordinator aggregates them. Every aggregated
 //! signature is then checked with orchard's own RedPallas code, independently
@@ -106,7 +106,7 @@ pub fn sign(
     aggregate(sighash, alpha, &commitments, &shares, public_key_package)
 }
 
-/// Checks a signature the way consensus does: RedPallas under rk = ak + [alpha]G.
+/// Checks a signature the way consensus does: RedPallas under `rk = ak + [alpha]G`.
 pub fn verify(
     ak: &[u8; 32],
     alpha: &[u8; 32],

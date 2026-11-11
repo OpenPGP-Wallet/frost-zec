@@ -28,12 +28,18 @@ const HIGH_FEE: u64 = 100_000;
 /// The total supply of ZEC in zatoshis: no honest amount can be larger.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
+/// What the co-signer shows before asking for approval.
 #[derive(Debug)]
 pub struct Report {
+    /// The transaction, line by line: spends, payments and their memos,
+    /// change, fee, lock time.
     pub lines: Vec<String>,
+    /// What the user must know before approving: the v6 pre-authorization
+    /// notice, a high fee.
     pub warnings: Vec<String>,
 }
 
+/// An amount in zatoshis, written in ZEC with eight decimals.
 pub fn zec(zatoshis: u64) -> String {
     format!(
         "{}.{:08} ZEC",

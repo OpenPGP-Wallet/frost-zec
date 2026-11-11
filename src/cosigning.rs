@@ -35,19 +35,25 @@ use crate::{pczt_io, signing};
 /// One session covers at most this many spends: the co-signer commits to this
 /// many nonces up front.
 pub const MAX_SPENDS: usize = 4;
+/// Size of a signing session id, chosen at random by the co-signer.
 pub const SESSION_ID_SIZE: usize = 16;
 
 /// What a member needs to sign: its key package, the group's public keys,
 /// and the group's full viewing key for the checks.
 #[derive(Clone)]
 pub struct Member {
+    /// This member's identifier, signing share and verifying share. Secret.
     pub key_package: KeyPackage,
+    /// The group key and every member's verifying share.
     pub public_key_package: PublicKeyPackage,
+    /// The group's full viewing key, used to check every PCZT.
     pub fvk: FullViewingKey,
+    /// The network the group's addresses are on.
     pub network: NetworkType,
 }
 
 impl Member {
+    /// This member's FROST identifier.
     pub fn id(&self) -> Identifier {
         *self.key_package.identifier()
     }
@@ -71,15 +77,20 @@ impl Member {
 /// Message 1, co-signer → coordinator.
 #[derive(Clone)]
 pub struct Commitments {
+    /// The session these commitments open.
     pub session: [u8; SESSION_ID_SIZE],
+    /// The co-signer's identifier.
     pub member: Identifier,
+    /// One fresh commitment per spend the co-signer is ready to sign.
     pub commitments: Vec<SigningCommitments>,
 }
 
 /// Message 2, coordinator → co-signer.
 #[derive(Clone)]
 pub struct Request {
+    /// The session opened by the co-signer's [`Commitments`].
     pub session: [u8; SESSION_ID_SIZE],
+    /// The coordinator's identifier.
     pub member: Identifier,
     /// The PCZT, unproven: a v6 signature covers neither proofs nor anchors.
     pub pczt: Vec<u8>,
@@ -92,14 +103,22 @@ pub struct Request {
 /// Message 3, co-signer → coordinator.
 #[derive(Clone)]
 pub enum Reply {
+    /// The user approved: the co-signer's share for each spend.
     Shares {
+        /// The session of the request.
         session: [u8; SESSION_ID_SIZE],
+        /// The co-signer's identifier.
         member: Identifier,
+        /// One share per spend, in bundle order.
         shares: Vec<SignatureShare>,
     },
+    /// The co-signer refused, before or after showing the transaction.
     Refused {
+        /// The session of the request.
         session: [u8; SESSION_ID_SIZE],
+        /// The co-signer's identifier.
         member: Identifier,
+        /// Why, already made safe to show (at most 1,000 characters).
         reason: String,
     },
 }
@@ -434,6 +453,7 @@ fn shares_in(list: &[ByteVec]) -> Result<Vec<SignatureShare>, Box<dyn Error>> {
 }
 
 impl Commitments {
+    /// The CBOR encoding sealed under [`crate::wire::kind::SIGN_COMMITMENTS`].
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(to_cbor(&CommitmentsWire {
             session: self.session,
@@ -442,6 +462,7 @@ impl Commitments {
         }))
     }
 
+    /// Reads [`Commitments`]; at most [`MAX_SPENDS`] of them.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let wire: CommitmentsWire = minicbor::decode(bytes)?;
         Ok(Commitments {
@@ -453,6 +474,7 @@ impl Commitments {
 }
 
 impl Request {
+    /// The CBOR encoding sealed under [`crate::wire::kind::SIGN_REQUEST`].
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(to_cbor(&RequestWire {
             session: self.session,
@@ -463,6 +485,7 @@ impl Request {
         }))
     }
 
+    /// Reads a [`Request`]; at most [`MAX_SPENDS`] commitments and shares.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let wire: RequestWire = minicbor::decode(bytes)?;
         Ok(Request {
@@ -476,12 +499,14 @@ impl Request {
 }
 
 impl Reply {
+    /// The session this reply answers.
     pub fn session(&self) -> [u8; SESSION_ID_SIZE] {
         match self {
             Reply::Shares { session, .. } | Reply::Refused { session, .. } => *session,
         }
     }
 
+    /// The CBOR encoding sealed under [`crate::wire::kind::SIGN_REPLY`].
     pub fn to_bytes(&self) -> Vec<u8> {
         let wire = match self {
             Reply::Shares {
@@ -508,6 +533,7 @@ impl Reply {
         to_cbor(&wire)
     }
 
+    /// Reads a [`Reply`]; a refusal's reason is shortened and made safe to show.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let wire: ReplyWire = minicbor::decode(bytes)?;
         let member = Identifier::deserialize(&wire.member)?;

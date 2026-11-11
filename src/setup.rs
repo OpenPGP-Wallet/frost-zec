@@ -31,11 +31,17 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::cosigning::Member;
 use crate::{backup, keys, signing};
 
+/// The version bound into the `sk` commitments and the transcript.
 pub const VERSION: u8 = 0;
+/// The threshold: any two members sign.
 pub const MIN_SIGNERS: u16 = 2;
+/// The group size.
 pub const MAX_SIGNERS: u16 = 3;
+/// Member 1, the coordinator.
 pub const COORDINATOR: u16 = 1;
+/// Member 2, the co-signer.
 pub const COSIGNER: u16 = 2;
+/// Member 3, the backup, created on the co-signer and exported.
 pub const BACKUP: u16 = 3;
 
 const PERSONAL_COMMIT: &[u8; 16] = b"ZcashFROSTv0SkCm";
@@ -118,21 +124,27 @@ pub fn sk_for_vectors(
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round1Entry {
+    /// The member's identifier, 1 to 3.
     #[n(1)]
     pub member: u16,
+    /// The serialized FROST DKG round 1 package.
     #[n(2)]
     #[cbor(with = "minicbor::bytes")]
     pub package: Vec<u8>,
+    /// `c_i`, the commitment to the member's contribution to `sk`.
     #[n(3)]
     #[cbor(with = "minicbor::bytes")]
     pub sk_commitment: [u8; 32],
 }
 
+/// A device's round 1: one entry per member it plays.
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round1 {
+    /// 0 for mainnet, 1 for testnet; bound into the transcript.
     #[n(1)]
     pub network: u8,
+    /// The entries of the members this device plays.
     #[n(2)]
     pub entries: Vec<Round1Entry>,
 }
@@ -142,10 +154,13 @@ pub struct Round1 {
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round2Entry {
+    /// The sending member.
     #[n(1)]
     pub from: u16,
+    /// The receiving member.
     #[n(2)]
     pub to: u16,
+    /// The serialized FROST DKG round 2 package. Secret.
     #[n(3)]
     #[cbor(with = "minicbor::bytes")]
     pub package: Vec<u8>,
@@ -157,11 +172,15 @@ impl Drop for Round2Entry {
     }
 }
 
+/// A member's contribution to `sk`, revealed in round 2. Secret until all
+/// three are combined.
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Reveal {
+    /// The member.
     #[n(1)]
     pub member: u16,
+    /// `r_i`, which must open the member's round 1 commitment.
     #[n(2)]
     #[cbor(with = "minicbor::bytes")]
     pub contribution: [u8; 32],
@@ -173,11 +192,14 @@ impl Drop for Reveal {
     }
 }
 
+/// A device's round 2. It holds secrets: it only ever travels sealed.
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round2 {
+    /// The round 2 packages this device sends.
     #[n(1)]
     pub packages: Vec<Round2Entry>,
+    /// The contributions of the members this device plays.
     #[n(2)]
     pub reveals: Vec<Reveal>,
     /// The transcript hash `T` as the sender saw it.
@@ -189,10 +211,12 @@ pub struct Round2 {
 macro_rules! cbor_bytes {
     ($t:ty) => {
         impl $t {
-            /// Round 2 holds secrets: the bytes are wiped when dropped.
+            /// The CBOR encoding. Round 2 holds secrets, so the bytes are
+            /// wiped when dropped.
             pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
                 Zeroizing::new(minicbor::to_vec(self).expect("encoding to memory cannot fail"))
             }
+            /// Reads the CBOR encoding.
             pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
                 Ok(minicbor::decode(bytes)?)
             }
@@ -204,11 +228,14 @@ cbor_bytes!(Round2);
 
 /// What a member ends up with.
 pub struct Group {
+    /// The member, ready to sign.
     pub member: Member,
     /// `sk`, from which `nk`, `rivk` and `qsk` derive. Secret: ZIP 2005 asks
     /// to protect it like `ask`.
     pub sk: [u8; 32],
+    /// The group's unified full viewing key, encoded.
     pub ufvk: String,
+    /// The group's default unified address, which both devices show.
     pub address: String,
 }
 

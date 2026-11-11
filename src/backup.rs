@@ -24,6 +24,7 @@ use zeroize::Zeroize;
 
 use crate::keys;
 
+/// The human-readable part of a member backup string.
 pub const HRP: &str = "zkfrost";
 const VERSION: u8 = 1;
 const PAYLOAD_LEN: usize = 68;
@@ -41,10 +42,15 @@ pub enum Derivation {
 /// of its `Debug` output.
 #[derive(PartialEq, Eq)]
 pub struct Backup {
+    /// The member's identifier, 1 to `n`.
     pub id: u8,
+    /// The threshold, 2 to `n`.
     pub t: u8,
+    /// The group size.
     pub n: u8,
+    /// The member's signing share. Secret.
     pub share: [u8; 32],
+    /// The group's `sk`. Secret.
     pub sk: [u8; 32],
 }
 
@@ -88,6 +94,7 @@ impl Backup {
         })
     }
 
+    /// The member backup string: Bech32m, lowercase. Secret.
     pub fn encode(&self) -> Result<String, Box<dyn Error>> {
         let mut payload = Vec::with_capacity(PAYLOAD_LEN);
         payload.extend_from_slice(&[VERSION, self.id, self.t, self.n]);
@@ -144,13 +151,23 @@ impl Backup {
 
 /// A member rebuilt from its string and the group's viewing key.
 pub struct Restored {
+    /// What the string holds.
     pub backup: Backup,
+    /// How the group derives its keys from `sk`.
     pub derivation: Derivation,
+    /// The member's key package, rebuilt from the share and the group key.
     pub key_package: KeyPackage,
+    /// The group's full viewing key.
     pub fvk: FullViewingKey,
+    /// The network of the viewing key.
     pub network: NetworkType,
 }
 
+/// Rebuilds a member from its backup string and the group's unified full
+/// viewing key. `sk` and the group key must give that viewing key, under ZIP
+/// 2005 or Zkool's older derivation. That proves the two go together, not
+/// that the share is the group's: [`check_member`] does, with the group's
+/// public key package.
 pub fn restore(text: &str, ufvk: &str) -> Result<Restored, Box<dyn Error>> {
     let backup = Backup::decode(text)?;
     if bool::from(SpendingKey::from_bytes(backup.sk).is_none()) {
