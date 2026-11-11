@@ -51,6 +51,7 @@ every message is sealed (§ 3.4) and its body is
 | 48 | sign-commitments | sealed |
 | 49 | sign-request | sealed |
 | 50 | sign-reply | sealed |
+| 64 | group-info | sealed (recovery, § 7.2, draft) |
 
 A reader refuses a payload over 512 KiB or a stream of more than 1024
 fragments, other UR types and unknown versions. It checks the header of each
@@ -257,7 +258,9 @@ random and feeds them to the code that reads them, a co-signer reviewing a
 request and a coordinator taking a reply included: no input may panic or take
 long.
 
-## 7. Backup
+## 7. Backup and recovery
+
+### 7.1 Member backup strings
 
 A member is backed up as a member backup string, specified by the FROST member
 backup ZIP draft (zcash/zips#1432), whose version 1 is Zkool's `zkfrost`
@@ -276,6 +279,56 @@ ZIP's test vectors pass with this crate and with Zkool's own code.
 Because the string holds `sk`, it is never stored or sent under public-key
 encryption that relies on discrete logarithms. Milestone 2 adds two profiles
 for keeping it: a passphrase-encrypted file and a mnemonic.
+
+### 7.2 Recovery *(Milestone 2, draft)*
+
+Losing one member never loses the funds: the two others move them to a fresh
+account. An account is never repaired in place. After a loss, the remaining
+members create a new 2-of-3 account (§ 4) and sweep every note of the old one
+to it, so whatever the lost device held (its share, `sk`, the pairing keys)
+can no longer spend; it still reveals the old account's history.
+
+| Lost | Signers of the sweep | How |
+|---|---|---|
+| Coordinator (1) | co-signer (2) and backup (3) | a new coordinator restores member 3 and pairs with the co-signer |
+| Co-signer (2) | coordinator (1) and backup (3) | the coordinator restores member 3 and signs with both; a new co-signer joins the new account |
+| Backup (3) | coordinator (1) and co-signer (2) | an ordinary session (§ 5), to a new account with a new backup |
+
+When the coordinator is lost:
+
+1. A new coordinator pairs with the co-signer (§ 3), and the user compares the
+   code as for a first pairing. The co-signer attaches the new pairing to its
+   existing member and forgets the old one, so the lost device can no longer
+   talk to it.
+2. The co-signer sends the old group's public key package and unified full
+   viewing key, sealed under a new kind, `group-info` (64). The new
+   coordinator restores member 3 from its backup string (§ 7.1) and checks it
+   against them: `sk` and the group key must give that viewing key, and
+   member 3's verifying share must be the package's.
+3. The two devices create the new account (§ 4), over the pairing of step 1.
+4. The new coordinator scans the old account with its viewing key, from the
+   account's birthday when known and otherwise from the Ironwood activation
+   height, and builds a PCZT that pays every spendable note, less the fee, to
+   the new account's address. A sweep with more notes than one session signs
+   (four, § 5) takes several transactions.
+5. The co-signer checks each PCZT as any other (§ 6). When the recipient is
+   the new account, whose address it computed itself in step 3, it says so,
+   so the user approves a transfer to their new account rather than to an
+   address they would have to read.
+6. Once the sweep is mined, the new coordinator deletes the restored member 3.
+
+When the co-signer is lost, the coordinator restores member 3 the same way,
+checked against the public key package it already holds, creates the new
+account with a new co-signer, and signs the sweep with members 1 and 3 itself.
+Until the sweep is mined that one device holds two members, so the sweep
+should be done in one sitting.
+
+The checks of step 2 do not stop a lying co-signer: it holds `sk`, so it can
+make a package and a viewing key that agree with the backup string but belong
+to no funded account. Nothing is lost then (the sweep finds no notes and the
+old account is untouched), but the recovery stalls. A backup kit that also
+carries the account's viewing key and birthday height would make step 2
+independent of the co-signer; whether the kit should carry them is open.
 
 ## 8. Test vectors
 
