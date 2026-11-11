@@ -182,9 +182,18 @@ fn a_pczt_that_skipped_the_io_finalizer_is_refused() {
 /// A unified address with several receivers, as wallets hand them out: the
 /// given Orchard receiver and a transparent one.
 fn invoice_address(orchard: &orchard::Address, network: NetworkType) -> String {
+    invoice_address_in(zcash_address::unified::Revision::R0, orchard, network)
+}
+
+/// The same in a given revision of the encoding (Revision 2 gives `tu1…`).
+fn invoice_address_in(
+    revision: zcash_address::unified::Revision,
+    orchard: &orchard::Address,
+    network: NetworkType,
+) -> String {
     use zcash_address::unified::{self, Encoding};
     unified::Address::try_from_items(
-        unified::Revision::R0,
+        revision,
         vec![
             unified::Uitem::Data(unified::Receiver::Orchard(orchard.to_raw_address_bytes())),
             unified::Uitem::Data(unified::Receiver::P2pkh([7; 20])),
@@ -220,16 +229,22 @@ fn named(pczt: Pczt, address: &str) -> Pczt {
 #[test]
 fn the_address_the_user_was_given_is_shown_once_checked() {
     let pczt = build(&group(), honest(&group(), MemoBytes::empty()));
-    let invoice = invoice_address(
-        &stranger().address_at(0u32, Scope::External),
-        NetworkType::Main,
-    );
-    assert_ne!(invoice, stranger_address());
-    let shown = analyze(&named(pczt, &invoice)).unwrap().lines.join("\n");
-    assert!(
-        shown.contains(&format!("PAY 0.00400000 ZEC to {invoice}")),
-        "{shown}"
-    );
+    let paid = stranger().address_at(0u32, Scope::External);
+    for revision in [
+        zcash_address::unified::Revision::R0,
+        zcash_address::unified::Revision::R2,
+    ] {
+        let invoice = invoice_address_in(revision, &paid, NetworkType::Main);
+        assert_ne!(invoice, stranger_address());
+        let shown = analyze(&named(pczt.clone(), &invoice))
+            .unwrap()
+            .lines
+            .join("\n");
+        assert!(
+            shown.contains(&format!("PAY 0.00400000 ZEC to {invoice}")),
+            "{shown}"
+        );
+    }
 }
 
 #[test]
