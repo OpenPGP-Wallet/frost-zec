@@ -227,6 +227,11 @@ Already implemented in `src/check.rs`, before any signature:
   recomputed from the note and the group's full viewing key; the output note
   commitment and the value commitment are recomputed; a dummy spend must
   already be signed; no dummy spending key may remain (ZIP 374);
+- the randomizer `α` of each of the group's spends must be non-zero and used by
+  no other spend in the transaction: a zero `α` would put the group's `ak`
+  itself on chain as `rk`, and a shared one would give two spends the same
+  `rk`, so anyone could link them. Reuse across transactions is not detected:
+  the co-signer keeps no record of past signatures;
 - a witness, when present, must lead to the bundle's anchor;
 - outputs are sorted into payments and change with the group's viewing key,
   and the fee is the difference. It must equal the bundle's signed value
@@ -247,8 +252,14 @@ Already implemented in `src/check.rs`, before any signature:
   and each signature is verified under the spend's `rk` before the user is
   asked;
 - the co-signer shows the full recipient address, amount, fee and memo, built
-  only from its own decoding, never from fields such as the PCZT's
-  `user_address` label, and asks for approval.
+  from its own decoding, and asks for approval. The address shown is the one
+  the user was given when the PCZT names it (`user_address`, which
+  zcash_client_backend fills in with the payment's address, often a unified
+  address with several receivers), so the user can compare it with their
+  invoice; it is shown only if it is a unified address on the group's network
+  whose Orchard receiver is the one paid, and a PCZT that names any other
+  address is refused. Without `user_address`, the paid receiver alone is
+  shown, as a unified address.
 
 The tamper suite (`tests/tamper.rs`, run in CI) builds PCZTs a dishonest
 coordinator could send and checks that each one is refused or shown exactly as

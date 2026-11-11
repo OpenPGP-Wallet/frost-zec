@@ -7,13 +7,17 @@
 //! another. Then it sorts the outputs into payments and change, and works out
 //! the fee.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 
+use ff::{Field, PrimeField};
 use orchard::keys::{FullViewingKey, PreparedIncomingViewingKey, Scope};
 use orchard::note::ExtractedNoteCommitment;
 use orchard::{Anchor, Note};
+use pasta_curves::pallas;
 use pczt::Pczt;
 use pczt::roles::low_level_signer::Signer;
+use zcash_address::unified::{self, Container, Encoding};
 use zcash_protocol::PoolType;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::constants::V6_TX_VERSION;
@@ -104,6 +108,69 @@ fn check_spend_structure(
     Ok(())
 }
 
+/// A spend's randomizer `alpha` is what hides the signing key on chain: the
+/// spend shows `rk = ak + [alpha]G`. A zero `alpha` would publish the group's
+/// `ak` itself as `rk`, the same in every such spend, and an `alpha` used for
+/// two spends gives them the same `rk`: either way anyone could link them.
+/// orchard's builder draws it at random, so only a dishonest or broken builder
+/// gets here. Reuse across transactions would need the co-signer to remember
+/// every `alpha` it signed; it does not.
+fn check_randomizer(
+    index: usize,
+    alpha: &pallas::Scalar,
+    seen: &mut BTreeSet<[u8; 32]>,
+) -> Result<(), TxError> {
+    if bool::from(alpha.is_zero()) {
+        return Err(TxError::Refused(format!(
+            "action {index}: the spend's randomizer is zero, which would show the group's key on chain"
+        )));
+    }
+    if !seen.insert(alpha.to_repr()) {
+        return Err(TxError::Refused(format!(
+            "action {index}: two spends share a randomizer, which would link them on chain"
+        )));
+    }
+    Ok(())
+}
+
+/// The address a payment is shown with.
+///
+/// A PCZT may name the address the user was given (`user_address`, ZIP 374):
+/// zcash_client_backend writes the payment's address there, usually a unified
+/// address with several receivers. That is the string the user can compare
+/// with their invoice, so it is shown, once checked: it must be a unified
+/// address on this network, and its Orchard receiver (the one Ironwood notes
+/// go to) must be the one paid. Any other value is refused, not ignored: a
+/// coordinator that names one address and pays another is not honest. Without
+/// it, the paid receiver alone is shown, as a unified address.
+fn payment_address(
+    index: usize,
+    named: Option<&str>,
+    recipient: &orchard::Address,
+    network: NetworkType,
+) -> Result<String, TxError> {
+    let Some(named) = named else {
+        return keys::encode_address(recipient, network)
+            .map_err(|e| TxError::Refused(e.to_string()));
+    };
+    let not_paid = || {
+        TxError::Refused(format!(
+            "action {index}: the address the transaction names is not the one it pays"
+        ))
+    };
+    let (named_network, _, address) = unified::Address::decode(named).map_err(|_| not_paid())?;
+    let paid = recipient.to_raw_address_bytes();
+    let pays_it = address
+        .items()
+        .iter()
+        .any(|item| matches!(item, unified::Receiver::Orchard(bytes) if *bytes == paid));
+    if named_network != network || !pays_it {
+        return Err(not_paid());
+    }
+    // Shown as encoded again from what was parsed, never as the PCZT's bytes.
+    Ok(address.encode(&network))
+}
+
 /// The warning every v6 signature needs. A v6 sighash leaves the anchors out
 /// (ZIP 374 lets them be set after signing), so signing does not prove that the
 /// spent notes exist on chain: it authorizes exactly these payments for as long
@@ -151,6 +218,7 @@ pub fn analyze(
     let mut paid = 0u64;
     let mut change = 0u64;
     let mut value_balance = None;
+    let mut randomizers = BTreeSet::new();
 
     if *pczt.global().tx_version() == V6_TX_VERSION {
         warnings.push(pre_authorization(*pczt.global().expiry_height())?);
@@ -206,6 +274,10 @@ pub fn analyze(
                 spend
                     .verify_rk(Some(fvk))
                     .map_err(|e| refuse(&format!("action {index}: randomized key"), &e))?;
+                let alpha = spend.alpha().as_ref().ok_or_else(|| {
+                    TxError::Refused(format!("action {index}: the spend has no randomizer"))
+                })?;
+                check_randomizer(index, alpha, &mut randomizers)?;
             }
             output
                 .verify_note_commitment(spend)
@@ -273,8 +345,12 @@ pub fn analyze(
                     }
                     None => {
                         add(&mut paid, output_value)?;
-                        let address = keys::encode_address(&recipient, network)
-                            .map_err(|e| TxError::Refused(e.to_string()))?;
+                        let address = payment_address(
+                            index,
+                            output.user_address().as_deref(),
+                            &recipient,
+                            network,
+                        )?;
                         lines.push(format!("PAY {} to {address}", zec(output_value)));
                         lines.push(format!("    {}", describe_memo(&memo)));
                     }
@@ -389,6 +465,21 @@ mod tests {
         assert_eq!(printable("a\tb\r\nc"), "a\\tb\\r\\nc");
         assert_eq!(printable("\u{1b}[2J"), "\\u{1b}[2J");
         assert_eq!(printable("x\u{200b}y\u{2067}z"), "x\\u{200b}y\\u{2067}z");
+    }
+
+    #[test]
+    fn a_randomizer_must_be_non_zero_and_used_once() {
+        let mut seen = BTreeSet::new();
+        let alpha = pallas::Scalar::from(5u64);
+        assert!(check_randomizer(0, &alpha, &mut seen).is_ok());
+        assert!(matches!(
+            check_randomizer(1, &alpha, &mut seen),
+            Err(TxError::Refused(reason)) if reason.contains("share a randomizer")
+        ));
+        assert!(matches!(
+            check_randomizer(2, &pallas::Scalar::ZERO, &mut seen),
+            Err(TxError::Refused(reason)) if reason.contains("randomizer is zero")
+        ));
     }
 
     #[test]
