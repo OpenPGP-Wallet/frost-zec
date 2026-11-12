@@ -16,8 +16,10 @@ for ZCG grant #490, Milestone 1.
 
 ## What you need
 
-- OpenPGP Wallet 2.16.2 or later, with a wallet created
+- OpenPGP Wallet 2.17.0 or later, with a wallet created
   ([releases](https://github.com/OpenPGP-Wallet/openpgp-wallet/releases)).
+  It speaks spec v1.0; earlier versions speak v0.1, and the two refuse each
+  other's signing messages.
 - The co-signer, built from this repository with a Rust toolchain:
 
   ```bash
@@ -77,14 +79,15 @@ files" further down.
    messages.
 6. **Wallet:** when the co-signer beeps, enter your password, then click
    **Paste the co-signer's message**.
-7. **Wallet:** the account's address shows. Click **Copy as text**.
-   **Co-signer:** wait until it shows an address. It computes its own share
-   and the backup's from this last message. Without it, the account can never
-   sign, and coins sent to it are lost.
-8. **Wallet:** click **The co-signer shows the same address…**. A Windows
-   window shows the whole address: choose **OK** only if it is exactly the
-   one the co-signer shows. Until then, the account's card says the setup is
-   not finished, shows no address and cannot receive.
+7. **Wallet:** click **Copy as text**. **Co-signer:** from this last message it
+   computes its own share and the backup's, writes the backup, checks that it
+   restores, and beeps: its acknowledgement is on the clipboard.
+8. **Wallet:** click **Paste the co-signer's message**. Only now does the
+   wallet show the account's address: the acknowledgement proves the
+   co-signer holds the same account. The co-signer shows the same address.
+   Until then, the account's card says the setup is not finished, shows no
+   address and cannot receive: without the co-signer's share, the account
+   could never sign, and coins sent to it would be lost.
 9. **Co-signer's folder:** the co-signer has written
    `my-cosigner/member3-backup.txt`, the backup member. Copy it to an offline
    medium (a USB stick you keep apart) and delete it from the computer. With
@@ -107,22 +110,21 @@ files" further down.
    optional), and continue. Under the recipient, the wallet says whether the
    co-signer will accept the address. Check the details in the Windows
    confirmation window, click **OK**, then let the cancellation delay run out.
-2. **Co-signer:** open a signing session:
+2. **Co-signer:** open a signing session. It waits for the wallet's request:
 
    ```bash
    frost-zec qr sign --as cosigner --state my-cosigner --via clipboard
    ```
 
-3. **Wallet:** when the co-signer beeps, enter your password, then click
-   **Paste the co-signer's message**.
-4. **Wallet:** the signing request shows. Click **Copy as text**.
-5. **Co-signer:** it checks the transaction on its own and shows what it does:
+3. **Wallet:** enter your password, click **Create the request**, then
+   **Copy as text**.
+4. **Co-signer:** it checks the transaction on its own and shows what it does:
    the recipient, the amount, the fee and the memo. **Type `y`, then Enter,
    only if this is what you entered in the wallet.**
-6. **Wallet:** when the co-signer beeps, click **Paste the co-signer's
-   message**. The wallet assembles the signature, proves the transaction and
-   broadcasts it, then shows the transaction id.
-7. Look the transaction up on an explorer:
+5. **Wallet:** when the co-signer beeps, click **Paste the co-signer's
+   message**. The wallet signs its part, assembles the signature, proves the
+   transaction and broadcasts it, then shows the transaction id.
+6. Look the transaction up on an explorer:
    [testnet](https://testnet.zcashexplorer.app) or
    [Mainnet](https://mainnet.zcashexplorer.app).
 
@@ -155,9 +157,9 @@ from DIR, for files carried between the two machines.
 | Setup 3 | **Copy as text**, save as | `3-pair-confirm.ur` |
 | Setup 4 | **Paste** the co-signer's | `4-cosigner-keys.ur` |
 | Setup 5 | **Copy as text**, save as | `5-coordinator-keys.ur` |
-| Send 1 | **Paste** the co-signer's | `sign-1-commitments.ur` |
-| Send 2 | **Copy as text**, save as | `sign-2-request.ur` |
-| Send 3 | **Paste** the co-signer's | `sign-3-reply.ur` |
+| Setup 6 | **Paste** the co-signer's | `6-cosigner-done.ur` |
+| Send 1 | **Copy as text**, save as | `sign-1-request.ur` |
+| Send 2 | **Paste** the co-signer's | `sign-2-reply.ur` |
 
 The co-signer reads a file once it is complete and deletes it after use.
 
@@ -181,11 +183,16 @@ The wallet holds one FROST account per network. To run the guide again:
   dangerous file"): a program or script downloaded unsigned is blocked.
   Right-click the archive, **Properties**, tick **Unblock**, then extract it
   again; or build the co-signer from source.
-- **The codes differ:** cancel on both sides and start again. Do not confirm.
-- **The account says the setup is not finished:** send nothing to it. If the
-  co-signer showed the account's address, click **The co-signer shows the
-  same address…** on the card and compare. If it never did, remove the account
-  and set it up again (see "Start over with a new account").
+- **The codes differ:** both sides cancel the setup. Do not start again at
+  once: find out what else could read or change the messages first.
+- **The account says the setup is not finished** (the wallet was closed before
+  the co-signer's last message): click **Finish the setup…** on the card,
+  enter your password, and paste the co-signer's acknowledgement. To show it
+  again, run `frost-zec qr done --state my-cosigner --via clipboard`. If the
+  co-signer never got the wallet's last message (it showed no address), remove
+  the account and set it up again (see "Start over with a new account").
+- **"This message comes from a co-signer of an earlier version":** the
+  co-signer speaks spec v0.1. Build it again from this repository.
 - **The co-signer's network differs** ("the coordinator set up the group for
   another network"): start the co-signer with the `--network` of the account
   being created (`test` for **Create on testnet**).

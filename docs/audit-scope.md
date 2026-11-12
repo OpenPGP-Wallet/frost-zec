@@ -56,8 +56,9 @@ Each attacker on its own, and what it must not gain:
 
 1. What the co-signer shows is what it signs: every byte under the v6 sighash
    is shown to the user or checked by the co-signer itself.
-2. Nonces are used once; a co-signer session answers at most one request;
-   shares leave only after approval.
+2. Nonces are used once: the co-signer draws fresh ones for every request and
+   erases them before it asks the user, and a coordinator session accepts one
+   reply. The co-signer's commitments and shares leave only after approval.
 3. The pairing resists a man in the middle: the six-digit code cannot be
    ground, sealed messages are bound to pairing, direction, kind and session,
    and the wallet confirms exactly the pairing whose code it showed.
@@ -71,8 +72,8 @@ Each attacker on its own, and what it must not gain:
 
 ## 5. In scope
 
-**frost-zec** (https://github.com/OpenPGP-Wallet/frost-zec), branch
-`m1-qr-protocol` at the commit given with the audit request. Non-blank lines,
+**frost-zec** (https://github.com/OpenPGP-Wallet/frost-zec), `master` at the
+commit given with the audit request. Non-blank lines,
 unit tests included:
 
 | File | Lines | Role |
@@ -91,8 +92,8 @@ unit tests included:
 The test co-signer, for its input handling only (invariant 5): `src/qrcli.rs`,
 `src/camera.rs`, `src/session.rs`, `src/qrview.rs` (about 1,080 lines).
 
-**OpenPGP Wallet** (https://github.com/OpenPGP-Wallet/openpgp-wallet), branch
-`frost-account`:
+**OpenPGP Wallet** (https://github.com/OpenPGP-Wallet/openpgp-wallet), `master`
+at the commit given with the audit request:
 
 | File | Lines | Role |
 |---|---|---|
@@ -121,8 +122,9 @@ the intended behaviour.
 ## 7. Known limits and accepted risks
 
 - **Randomizers.** Until the Orchard builder accepts one from the caller
-  (zcash/orchard#571), each spend's α comes from the PCZT, so a dishonest
-  coordinator can choose it after seeing the co-signer's commitments (spec § 5).
+  (zcash/orchard#571), each spend's α comes from the PCZT. Since spec v1.0 the
+  PCZT is fixed before the co-signer commits, but α is still not derived from
+  the commitments as ZIP 312 does (spec § 5).
 - **Every member holds `sk`**, as ZIP 2005 requires; a member's device gives its
   holder the viewing key and `qsk`.
 - **No forward secrecy** in the pairing beyond device compromise (spec § 3.4).
@@ -150,21 +152,26 @@ the intended behaviour.
   a minute of it in every CI run.
 - **Test vectors** (`tests/fixtures/spec-vectors.json`), recomputed from the
   spec's formulas by `tests/vectors.rs`.
+- **Review of spec v0.1** by Daniel Gorgonha (DeegaLabs, Konclave), on the
+  grant's forum thread: led to the two-message signing session, the
+  acknowledgement at the end of key generation, a code mismatch that ends the
+  pairing, and the signer checks written as requirements (spec § 10).
 - [External model review: to be added.]
 - [Specification review by another wallet developer or a ZF FROST maintainer:
   to be added.]
 
 ## 9. Questions for the auditors
 
-1. Is the randomizer choice in § 7 exploitable by a coordinator that chooses α
-   after the co-signer's commitments?
+1. Is taking α from the PCZT (§ 7), fixed before the co-signer commits but not
+   derived from the commitments, exploitable by a dishonest coordinator?
 2. Does the commit and reveal of `sk` on top of the DKG keep every member,
    including the last to reveal, from choosing it?
 3. Is any field under the v6 sighash neither shown nor checked by the
    co-signer?
 4. Can a frontend command sequence reach a signature or a pairing the user did
    not confirm in a native window?
-5. Would the two-message signing session in spec § 9 be sound?
+5. Is the two-message signing session of spec § 5 sound, given that the
+   co-signer commits last and the coordinator first?
 
 ## 10. Reproducing
 
