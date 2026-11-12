@@ -4,6 +4,7 @@
 /wallet
 *.pczt
 !tests/fixtures/*.pczt
+!vectors/tamper/*/*.pczt
 /funding
 *.log
 /vault
