@@ -464,13 +464,13 @@ fn shown_payments(report: &check::Report) -> Vec<(String, String)> {
 }
 
 /// The approved payments as this co-signer would show them.
-fn expected_payments(case: &Value) -> Vec<(String, String)> {
+fn expected_payments(case: &Value, network: NetworkType) -> Vec<(String, String)> {
     case["approved"]["payments"]
         .as_array()
         .unwrap()
         .iter()
         .map(|p| {
-            let amount = check::zec(p["amount"].as_u64().unwrap());
+            let amount = check::amount(p["amount"].as_u64().unwrap(), network);
             let address = p["address"].as_str().unwrap();
             let memo = match p.get("memo").and_then(Value::as_str) {
                 Some(text) => MemoBytes::from_bytes(text.as_bytes()).unwrap(),
@@ -540,7 +540,7 @@ fn every_case_passes() {
             .unwrap_or_else(|e| panic!("{id}: the accepted PCZT is refused: {e}"));
         assert_eq!(
             shown_payments(&report),
-            expected_payments(&case),
+            expected_payments(&case, network),
             "{id}: the accepted PCZT does not show the approved payments"
         );
         assert_eq!(
@@ -567,7 +567,7 @@ fn every_case_passes() {
             }
             // Accepted, but showing another payment than the approved one:
             // the user, comparing, refuses it.
-            Ok(report) if shown_payments(&report) != expected_payments(&case) => "payment",
+            Ok(report) if shown_payments(&report) != expected_payments(&case, network) => "payment",
             Ok(report) => panic!("{id}: the refused PCZT is accepted: {:?}", report.lines),
         };
         assert!(
