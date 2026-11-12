@@ -1,22 +1,37 @@
 //! A signing session between the coordinator and a co-signer (docs/spec.md § 5),
-//! independent of how the messages travel.
+//! independent of how the messages travel. Two messages:
 //!
-//! 1. The co-signer opens the session with fresh commitments, before it sees
-//!    the transaction.
-//! 2. The coordinator answers with the PCZT, its own commitments and its
-//!    signature shares.
-//! 3. The co-signer checks the PCZT on its own, computes its shares, aggregates
-//!    them with the coordinator's and verifies the final signatures, and only
-//!    then asks the user. Its shares leave the device only if the user
-//!    approves.
+//! 1. The coordinator sends the PCZT and one fresh commitment per spend, under
+//!    a session id it chose. It keeps its nonces in memory.
+//! 2. The co-signer checks the PCZT on its own, draws its nonces only then,
+//!    builds the commitment list itself and computes its shares. Its
+//!    commitments and shares leave the device only if the user approves; its
+//!    nonces are erased either way.
 //!
-//! The types enforce the rules that matter: a co-signer session answers at
-//! most one request, because reviewing it consumes the session and its
-//! nonces; nonces never leave memory; and nothing is signed on the
-//! coordinator's word, since the sighash and the randomizers come from the
-//! PCZT the co-signer checked itself.
+//! The coordinator then signs its part, aggregates and checks every signature
+//! under its spend's `rk`.
+//!
+//! Why this order is safe (spec § 5): every binding factor hashes the group
+//! key, the message and the whole commitment list (RFC 9591 § 4.4). The
+//! co-signer commits last, after the PCZT, the randomizers and the
+//! coordinator's commitments are fixed, and answers at once, so it never has a
+//! commitment waiting for a dishonest coordinator to adapt to. The coordinator
+//! is the side that commits first, which is the case binding factors are for.
+//!
+//! The types enforce the rules that matter:
+//! - the co-signer builds the commitment list from its own commitment and the
+//!   coordinator's, and refuses a request naming its own identifier or a
+//!   stranger;
+//! - nonces never leave memory, and the co-signer's are dropped (and wiped)
+//!   before the user is even asked;
+//! - a coordinator session accepts one reply, because finishing consumes it
+//!   and its nonces: two replies with different co-signer commitments against
+//!   the same coordinator nonces could give away the coordinator's share
+//!   (RFC 9591 § 7.3);
+//! - nothing is signed on the coordinator's word, since the sighash and the
+//!   randomizers come from the PCZT the co-signer checked itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use frost::Identifier;
@@ -32,10 +47,9 @@ use zcash_protocol::consensus::NetworkType;
 use crate::check::{self, Report};
 use crate::{pczt_io, signing};
 
-/// One session covers at most this many spends: the co-signer commits to this
-/// many nonces up front.
+/// One session covers at most this many spends.
 pub const MAX_SPENDS: usize = 4;
-/// Size of a signing session id, chosen at random by the co-signer.
+/// Size of a signing session id, chosen at random by the coordinator.
 pub const SESSION_ID_SIZE: usize = 16;
 
 /// What a member needs to sign: its key package, the group's public keys,
@@ -74,41 +88,30 @@ impl Member {
     }
 }
 
-/// Message 1, co-signer → coordinator.
-#[derive(Clone)]
-pub struct Commitments {
-    /// The session these commitments open.
-    pub session: [u8; SESSION_ID_SIZE],
-    /// The co-signer's identifier.
-    pub member: Identifier,
-    /// One fresh commitment per spend the co-signer is ready to sign.
-    pub commitments: Vec<SigningCommitments>,
-}
-
-/// Message 2, coordinator → co-signer.
+/// Message 1, coordinator → co-signer.
 #[derive(Clone)]
 pub struct Request {
-    /// The session opened by the co-signer's [`Commitments`].
+    /// The session, chosen at random by the coordinator.
     pub session: [u8; SESSION_ID_SIZE],
     /// The coordinator's identifier.
     pub member: Identifier,
     /// The PCZT, unproven: a v6 signature covers neither proofs nor anchors.
     pub pczt: Vec<u8>,
-    /// The coordinator's commitment for each spend, in bundle order.
+    /// The coordinator's fresh commitment for each spend, in bundle order.
     pub commitments: Vec<SigningCommitments>,
-    /// The coordinator's signature share for each spend.
-    pub shares: Vec<SignatureShare>,
 }
 
-/// Message 3, co-signer → coordinator.
+/// Message 2, co-signer → coordinator.
 #[derive(Clone)]
 pub enum Reply {
-    /// The user approved: the co-signer's share for each spend.
+    /// The user approved: the co-signer's commitment and share for each spend.
     Shares {
         /// The session of the request.
         session: [u8; SESSION_ID_SIZE],
         /// The co-signer's identifier.
         member: Identifier,
+        /// One commitment per spend, in bundle order.
+        commitments: Vec<SigningCommitments>,
         /// One share per spend, in bundle order.
         shares: Vec<SignatureShare>,
     },
@@ -123,114 +126,76 @@ pub enum Reply {
     },
 }
 
-/// The co-signer between messages 1 and 2. Its nonces live only here.
-pub struct CosignerSession<'a> {
-    member: &'a Member,
-    session: [u8; SESSION_ID_SIZE],
-    nonces: Vec<SigningNonces>,
-    commitments: Vec<SigningCommitments>,
-}
-
-/// A request the co-signer checked, waiting for the user. The shares are
-/// computed but not released.
+/// A request the co-signer checked, waiting for the user. The commitments and
+/// shares are computed but not released; the nonces behind them are already
+/// gone.
 pub struct PendingApproval {
     session: [u8; SESSION_ID_SIZE],
     member: Identifier,
     report: Report,
+    commitments: Vec<SigningCommitments>,
     shares: Vec<SignatureShare>,
 }
 
-impl<'a> CosignerSession<'a> {
-    /// Message 1: fresh nonces for up to [`MAX_SPENDS`] spends.
-    pub fn open<R: CryptoRng + ?Sized>(member: &'a Member, rng: &mut R) -> (Self, Commitments) {
-        let mut session = [0u8; SESSION_ID_SIZE];
-        rng.fill_bytes(&mut session);
-        let (nonces, commitments): (Vec<_>, Vec<_>) = (0..MAX_SPENDS)
-            .map(|_| signing::commit(&member.key_package))
-            .unzip();
-        let message = Commitments {
-            session,
+/// The co-signer's side of message 1: checks the request and, if it holds,
+/// prepares the reply for the user to approve. On refusal, returns the reply
+/// to send. The co-signer keeps no state between requests: each request gets
+/// fresh nonces, used once here and dropped before this returns.
+pub fn review(member: &Member, request: &Request) -> Result<PendingApproval, Reply> {
+    match review_inner(member, request) {
+        Ok((report, commitments, shares)) => Ok(PendingApproval {
+            session: request.session,
             member: member.id(),
-            commitments: commitments.clone(),
-        };
-        let cosigner = CosignerSession {
-            member,
-            session,
-            nonces,
+            report,
             commitments,
-        };
-        (cosigner, message)
+            shares,
+        }),
+        Err(error) => Err(Reply::Refused {
+            session: request.session,
+            member: member.id(),
+            reason: error.to_string(),
+        }),
     }
+}
 
-    /// Checks message 2. Consumes the session: whatever happens, its nonces
-    /// are never used again. On refusal, returns the reply to send.
-    pub fn review(self, request: &Request) -> Result<PendingApproval, Reply> {
-        let refuse = |reason: String| Reply::Refused {
-            session: self.session,
-            member: self.member.id(),
-            reason,
-        };
-        match self.review_inner(request) {
-            Ok((report, shares)) => Ok(PendingApproval {
-                session: self.session,
-                member: self.member.id(),
-                report,
-                shares,
-            }),
-            Err(error) => Err(refuse(error.to_string())),
-        }
-    }
+type Prepared = (Report, Vec<SigningCommitments>, Vec<SignatureShare>);
 
-    fn review_inner(
-        &self,
-        request: &Request,
-    ) -> Result<(Report, Vec<SignatureShare>), Box<dyn Error>> {
-        if request.session != self.session {
-            return Err("the request belongs to another session".into());
-        }
-        self.member.check_other(&request.member)?;
-        let pczt = pczt_io::parse(&request.pczt)?;
-        let report = check::analyze(&pczt, &self.member.fvk, self.member.network)?;
-        // The sighash and the randomizers come from the PCZT checked above,
-        // never from the coordinator.
-        let sighash = pczt_io::sighash(&pczt)?;
-        let spends = pczt_io::spends_to_sign(&pczt)?;
-        if spends.len() > self.nonces.len()
-            || request.commitments.len() != spends.len()
-            || request.shares.len() != spends.len()
-        {
-            return Err("the number of spends, commitments and shares do not match".into());
-        }
-        let me = self.member.id();
-        let mut shares = Vec::with_capacity(spends.len());
-        for (i, spend) in spends.iter().enumerate() {
-            let commitments = BTreeMap::from([
-                (request.member, request.commitments[i]),
-                (me, self.commitments[i]),
-            ]);
-            let share = signing::share(
-                &sighash,
-                &spend.alpha,
-                &commitments,
-                &self.nonces[i],
-                &self.member.key_package,
-            )?;
-            // The coordinator's share, with this one, must give a signature
-            // that verifies under the spend's rk. Otherwise the coordinator
-            // sent a bad share, or signed something else.
-            let both = BTreeMap::from([(request.member, request.shares[i]), (me, share)]);
-            signing::aggregate(
-                &sighash,
-                &spend.alpha,
-                &commitments,
-                &both,
-                &self.member.public_key_package,
-            )
-            .map_err(|_| "the coordinator's signature share does not verify")?;
-            shares.push(share);
-        }
-        Ok((report, shares))
+fn review_inner(member: &Member, request: &Request) -> Result<Prepared, Box<dyn Error>> {
+    member.check_other(&request.member)?;
+    let pczt = pczt_io::parse(&request.pczt)?;
+    let report = check::analyze(&pczt, &member.fvk, member.network)?;
+    // The sighash and the randomizers come from the PCZT checked above,
+    // never from the coordinator.
+    let sighash = pczt_io::sighash(&pczt)?;
+    let spends = pczt_io::spends_to_sign(&pczt)?;
+    if spends.len() > MAX_SPENDS || request.commitments.len() != spends.len() {
+        return Err("the number of spends and commitments do not match".into());
     }
+    // A coordinator that repeats a commitment reuses its nonces, which would
+    // give away its own share: refuse rather than take part.
+    let distinct: BTreeSet<Vec<u8>> = request
+        .commitments
+        .iter()
+        .map(|c| c.serialize())
+        .collect::<Result<_, _>>()?;
+    if distinct.len() != request.commitments.len() {
+        return Err("the coordinator repeats a commitment".into());
+    }
+    let me = member.id();
+    let mut commitments = Vec::with_capacity(spends.len());
+    let mut shares = Vec::with_capacity(spends.len());
+    for (i, spend) in spends.iter().enumerate() {
+        // Drawn only now, once everything they will sign is fixed.
+        let (nonces, mine) = signing::commit(&member.key_package);
+        // The co-signer builds the list itself: exactly the coordinator and
+        // this member, so its own commitment is in it by construction.
+        let list = BTreeMap::from([(request.member, request.commitments[i]), (me, mine)]);
+        let share = signing::share(&sighash, &spend.alpha, &list, &nonces, &member.key_package)?;
+        drop::<SigningNonces>(nonces);
+        commitments.push(mine);
+        shares.push(share);
+    }
+    Ok((report, commitments, shares))
 }
 
 impl PendingApproval {
@@ -239,16 +204,18 @@ impl PendingApproval {
         &self.report
     }
 
-    /// Message 3, once the user approved.
+    /// Message 2, once the user approved.
     pub fn approve(self) -> Reply {
         Reply::Shares {
             session: self.session,
             member: self.member,
+            commitments: self.commitments,
             shares: self.shares,
         }
     }
 
-    /// Message 3, when the user declined. The shares are dropped unsent.
+    /// Message 2, when the user declined. The commitments and shares are
+    /// dropped unsent.
     pub fn decline(self) -> Reply {
         Reply::Refused {
             session: self.session,
@@ -258,131 +225,121 @@ impl PendingApproval {
     }
 }
 
-/// The coordinator between messages 2 and 3. It owns a copy of the member, so
-/// an app can keep the session between two scans.
+/// The coordinator between messages 1 and 2. It owns a copy of the member and
+/// its nonces, so an app can keep the session between two scans. Finishing
+/// consumes it: one reply per set of nonces.
 pub struct CoordinatorSession {
     member: Member,
     session: [u8; SESSION_ID_SIZE],
-    other: Identifier,
     pczt: Pczt,
     sighash: [u8; 32],
     spends: Vec<pczt_io::SpendToSign>,
-    commitments: Vec<BTreeMap<Identifier, SigningCommitments>>,
-    shares: Vec<SignatureShare>,
+    nonces: Vec<SigningNonces>,
+    commitments: Vec<SigningCommitments>,
 }
 
 impl CoordinatorSession {
-    /// Message 2: checks the PCZT too (whatever built it is not trusted to
-    /// have built what the user asked for), then signs its part.
-    pub fn request(
+    /// Message 1: checks the PCZT too (whatever built it is not trusted to
+    /// have built what the user asked for), then commits to fresh nonces for
+    /// each spend. A new request, even for the same transaction, opens a new
+    /// session with new nonces.
+    pub fn request<R: CryptoRng + ?Sized>(
         member: &Member,
         pczt_bytes: &[u8],
-        theirs: &Commitments,
+        rng: &mut R,
     ) -> Result<(Self, Request, Report), Box<dyn Error>> {
-        member.check_other(&theirs.member)?;
         let pczt = pczt_io::parse(pczt_bytes)?;
         let report = check::analyze(&pczt, &member.fvk, member.network)?;
         let sighash = pczt_io::sighash(&pczt)?;
         let spends = pczt_io::spends_to_sign(&pczt)?;
-        if spends.len() > MAX_SPENDS || spends.len() > theirs.commitments.len() {
-            return Err("more spends than the co-signer has commitments for".into());
+        if spends.len() > MAX_SPENDS {
+            return Err(format!("more than {MAX_SPENDS} spends in one transaction").into());
         }
-        let me = member.id();
-        let mut all_commitments = Vec::with_capacity(spends.len());
-        let mut my_commitments = Vec::with_capacity(spends.len());
-        let mut shares = Vec::with_capacity(spends.len());
-        for (i, spend) in spends.iter().enumerate() {
-            // Fresh nonces, used once, right away, then dropped.
-            let (nonces, mine) = signing::commit(&member.key_package);
-            let commitments = BTreeMap::from([(me, mine), (theirs.member, theirs.commitments[i])]);
-            shares.push(signing::share(
-                &sighash,
-                &spend.alpha,
-                &commitments,
-                &nonces,
-                &member.key_package,
-            )?);
-            my_commitments.push(mine);
-            all_commitments.push(commitments);
-        }
+        let mut session = [0u8; SESSION_ID_SIZE];
+        rng.fill_bytes(&mut session);
+        let (nonces, commitments): (Vec<_>, Vec<_>) = spends
+            .iter()
+            .map(|_| signing::commit(&member.key_package))
+            .unzip();
         let request = Request {
-            session: theirs.session,
-            member: me,
+            session,
+            member: member.id(),
             pczt: pczt_bytes.to_vec(),
-            commitments: my_commitments,
-            shares: shares.clone(),
+            commitments: commitments.clone(),
         };
         let coordinator = CoordinatorSession {
             member: member.clone(),
-            session: theirs.session,
-            other: theirs.member,
+            session,
             pczt,
             sighash,
             spends,
-            commitments: all_commitments,
-            shares,
+            nonces,
+            commitments,
         };
         Ok((coordinator, request, report))
     }
 
-    /// Message 3: aggregates, checks each signature under its rk, and returns
-    /// the signed PCZT, ready to prove and broadcast.
+    /// The session id this coordinator chose.
+    pub fn session(&self) -> [u8; SESSION_ID_SIZE] {
+        self.session
+    }
+
+    /// Message 2: signs this member's part over the co-signer's commitments,
+    /// aggregates, checks each signature under its rk, and returns the signed
+    /// PCZT, ready to prove and broadcast. Consumes the session and its
+    /// nonces, whatever the reply.
     pub fn finish(self, reply: &Reply) -> Result<Pczt, Box<dyn Error>> {
-        let their_shares = match reply {
+        let (other, their_commitments, their_shares) = match reply {
             Reply::Refused {
-                session,
-                member,
-                reason,
-            } if *session == self.session && *member == self.other => {
+                session, reason, ..
+            } if *session == self.session => {
                 return Err(format!("the co-signer refused: {reason}").into());
             }
             Reply::Shares {
                 session,
                 member,
+                commitments,
                 shares,
-            } if *session == self.session && *member == self.other => shares,
-            _ => return Err("the reply belongs to another session or member".into()),
+            } if *session == self.session => (*member, commitments, shares),
+            _ => return Err("the reply belongs to another session".into()),
         };
-        if their_shares.len() != self.spends.len() {
-            return Err("the co-signer returned the wrong number of shares".into());
+        self.member.check_other(&other)?;
+        if their_commitments.len() != self.spends.len() || their_shares.len() != self.spends.len() {
+            return Err("the co-signer returned the wrong number of commitments or shares".into());
         }
         let me = self.member.id();
         let mut signatures = Vec::with_capacity(self.spends.len());
         for (i, spend) in self.spends.iter().enumerate() {
-            let shares = BTreeMap::from([(me, self.shares[i]), (self.other, their_shares[i])]);
+            let list = BTreeMap::from([(me, self.commitments[i]), (other, their_commitments[i])]);
+            let mine = signing::share(
+                &self.sighash,
+                &spend.alpha,
+                &list,
+                &self.nonces[i],
+                &self.member.key_package,
+            )?;
+            let shares = BTreeMap::from([(me, mine), (other, their_shares[i])]);
             let signature = signing::aggregate(
                 &self.sighash,
                 &spend.alpha,
-                &self.commitments[i],
+                &list,
                 &shares,
                 &self.member.public_key_package,
-            )?;
+            )
+            .map_err(|_| "the co-signer's signature share does not verify")?;
             signatures.push((spend.index, signature));
         }
         pczt_io::apply(self.pczt, &self.sighash, &signatures)
     }
 }
 
-// The three messages on the wire (CBOR maps, sealed under the pairing).
+// The two messages on the wire (CBOR maps, sealed under the pairing).
 
 use minicbor::bytes::ByteVec;
 use minicbor::{Decode, Encode};
 
 /// The longest refusal reason a co-signer may send back.
 const MAX_REASON: usize = 1000;
-
-#[derive(Encode, Decode)]
-#[cbor(map)]
-struct CommitmentsWire {
-    #[n(1)]
-    #[cbor(with = "minicbor::bytes")]
-    session: [u8; SESSION_ID_SIZE],
-    #[n(2)]
-    #[cbor(with = "minicbor::bytes")]
-    member: Vec<u8>,
-    #[n(3)]
-    commitments: Vec<ByteVec>,
-}
 
 #[derive(Encode, Decode)]
 #[cbor(map)]
@@ -398,8 +355,6 @@ struct RequestWire {
     pczt: Vec<u8>,
     #[n(4)]
     commitments: Vec<ByteVec>,
-    #[n(5)]
-    shares: Vec<ByteVec>,
 }
 
 #[derive(Encode, Decode)]
@@ -412,8 +367,10 @@ struct ReplyWire {
     #[cbor(with = "minicbor::bytes")]
     member: Vec<u8>,
     #[n(3)]
-    shares: Option<Vec<ByteVec>>,
+    commitments: Option<Vec<ByteVec>>,
     #[n(4)]
+    shares: Option<Vec<ByteVec>>,
+    #[n(5)]
     refused: Option<String>,
 }
 
@@ -452,27 +409,6 @@ fn shares_in(list: &[ByteVec]) -> Result<Vec<SignatureShare>, Box<dyn Error>> {
         .collect()
 }
 
-impl Commitments {
-    /// The CBOR encoding sealed under [`crate::wire::kind::SIGN_COMMITMENTS`].
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(to_cbor(&CommitmentsWire {
-            session: self.session,
-            member: self.member.serialize(),
-            commitments: commitments_out(&self.commitments)?,
-        }))
-    }
-
-    /// Reads [`Commitments`]; at most [`MAX_SPENDS`] of them.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let wire: CommitmentsWire = minicbor::decode(bytes)?;
-        Ok(Commitments {
-            session: wire.session,
-            member: Identifier::deserialize(&wire.member)?,
-            commitments: commitments_in(&wire.commitments)?,
-        })
-    }
-}
-
 impl Request {
     /// The CBOR encoding sealed under [`crate::wire::kind::SIGN_REQUEST`].
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -481,11 +417,10 @@ impl Request {
             member: self.member.serialize(),
             pczt: self.pczt.clone(),
             commitments: commitments_out(&self.commitments)?,
-            shares: shares_out(&self.shares),
         }))
     }
 
-    /// Reads a [`Request`]; at most [`MAX_SPENDS`] commitments and shares.
+    /// Reads a [`Request`]; at most [`MAX_SPENDS`] commitments.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let wire: RequestWire = minicbor::decode(bytes)?;
         Ok(Request {
@@ -493,7 +428,6 @@ impl Request {
             member: Identifier::deserialize(&wire.member)?,
             pczt: wire.pczt,
             commitments: commitments_in(&wire.commitments)?,
-            shares: shares_in(&wire.shares)?,
         })
     }
 }
@@ -507,15 +441,17 @@ impl Reply {
     }
 
     /// The CBOR encoding sealed under [`crate::wire::kind::SIGN_REPLY`].
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         let wire = match self {
             Reply::Shares {
                 session,
                 member,
+                commitments,
                 shares,
             } => ReplyWire {
                 session: *session,
                 member: member.serialize(),
+                commitments: Some(commitments_out(commitments)?),
                 shares: Some(shares_out(shares)),
                 refused: None,
             },
@@ -526,24 +462,26 @@ impl Reply {
             } => ReplyWire {
                 session: *session,
                 member: member.serialize(),
+                commitments: None,
                 shares: None,
                 refused: Some(reason.chars().take(MAX_REASON).collect()),
             },
         };
-        to_cbor(&wire)
+        Ok(to_cbor(&wire))
     }
 
     /// Reads a [`Reply`]; a refusal's reason is shortened and made safe to show.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let wire: ReplyWire = minicbor::decode(bytes)?;
         let member = Identifier::deserialize(&wire.member)?;
-        match (wire.shares, wire.refused) {
-            (Some(shares), None) => Ok(Reply::Shares {
+        match (wire.commitments, wire.shares, wire.refused) {
+            (Some(commitments), Some(shares), None) => Ok(Reply::Shares {
                 session: wire.session,
                 member,
+                commitments: commitments_in(&commitments)?,
                 shares: shares_in(&shares)?,
             }),
-            (None, Some(reason)) => Ok(Reply::Refused {
+            (None, None, Some(reason)) => Ok(Reply::Refused {
                 session: wire.session,
                 member,
                 // Shown to the user: keep it short and free of control characters.
@@ -551,7 +489,7 @@ impl Reply {
                     &reason.chars().take(MAX_REASON).collect::<String>(),
                 ),
             }),
-            _ => Err("a reply holds either shares or a refusal".into()),
+            _ => Err("a reply holds either commitments and shares, or a refusal".into()),
         }
     }
 }

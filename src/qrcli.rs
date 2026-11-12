@@ -29,10 +29,10 @@ use std::thread;
 use std::time::Instant;
 
 use frost_zec::channel::{Initiator, Pairing, Responder};
-use frost_zec::cosigning::{
-    Commitments, CoordinatorSession, CosignerSession, Member, Reply, Request,
+use frost_zec::cosigning::{self, CoordinatorSession, Member, Reply, Request};
+use frost_zec::setup::{
+    self as dkg_setup, CoordinatorSetup, CosignerSetup, Done, Group, Round1, Round2,
 };
-use frost_zec::setup::{CoordinatorSetup, CosignerSetup, Group, Round1, Round2};
 use frost_zec::wire::{self, Message, kind};
 use frost_zec::{interop, keys, pczt_io, session, signing};
 use rand10::rand_core::UnwrapErr;
@@ -43,6 +43,10 @@ use serde::{Deserialize, Serialize};
 use super::{flag, option, print_report, qrview};
 
 const SEAT_FILE: &str = "seat.json";
+/// A mismatch ends the pairing: each new attempt would be a new guess for
+/// whoever sits between the devices (spec § 3.3).
+const CODES_DIFFER: &str = "pairing cancelled: the codes differ. Another device may be reading or \
+     changing the messages between these two: find out why before you start a new setup";
 const DKG_SESSION: &[u8] = b"dkg";
 
 const PAIR_INIT: &str = "1-pair-init.ur";
@@ -50,9 +54,9 @@ const PAIR_RESPONSE: &str = "2-pair-response.ur";
 const PAIR_CONFIRM: &str = "3-pair-confirm.ur";
 const COSIGNER_KEYS: &str = "4-cosigner-keys.ur";
 const COORDINATOR_KEYS: &str = "5-coordinator-keys.ur";
-const SIGN_COMMITMENTS: &str = "sign-1-commitments.ur";
-const SIGN_REQUEST: &str = "sign-2-request.ur";
-const SIGN_REPLY: &str = "sign-3-reply.ur";
+const COSIGNER_DONE: &str = "6-cosigner-done.ur";
+const SIGN_REQUEST: &str = "sign-1-request.ur";
+const SIGN_REPLY: &str = "sign-2-reply.ur";
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     match args.first().map(String::as_str) {
@@ -435,7 +439,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             )?;
             println!("  pairing code: {}", pending.code());
             if !ask("  Does the other device show the same code?", yes)? {
-                return Err("pairing cancelled: the codes differ".into());
+                return Err(CODES_DIFFER.into());
             }
             let pairing = pending.confirm();
             let messages = carrier.receive(COSIGNER_KEYS)?;
@@ -456,6 +460,12 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
                     &mut rng,
                 )?],
             )?;
+            // No address before the co-signer acknowledges: until then it may
+            // not hold its share, and member 3 may not be exported.
+            let messages = carrier.receive(COSIGNER_DONE)?;
+            one(&messages, 1)?;
+            let (_, done) = messages[0].open(&pairing, kind::DKG_DONE)?;
+            group.check_done(&Done::from_bytes(&done)?)?;
             let seat = Seat::new("coordinator", network_name, &pairing, &group)?;
             seat.save(&state)?;
             print_seat(&seat);
@@ -471,7 +481,7 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             let pending = responder.finish(&messages[0].to_pair_confirm()?)?;
             println!("  pairing code: {}", pending.code());
             if !ask("  Does the other device show the same code?", yes)? {
-                return Err("pairing cancelled: the codes differ".into());
+                return Err(CODES_DIFFER.into());
             }
             let pairing = pending.confirm();
             let (_, theirs1) = messages[1].open(&pairing, kind::DKG_ROUND1)?;
@@ -504,16 +514,37 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             seat.save(&state)?;
             let backup_path = state.join("member3-backup.txt");
             fs::write(&backup_path, backup.backup_string()?)?;
+            // Member 3 leaves memory here; what was written is checked, not
+            // what was in memory.
+            drop(backup);
+            dkg_setup::check_backup(&fs::read_to_string(&backup_path)?, &cosigner).map_err(
+                |e| {
+                    format!(
+                        "the backup written to {} does not restore: {e}",
+                        backup_path.display()
+                    )
+                },
+            )?;
+            carrier.send(
+                COSIGNER_DONE,
+                &[Message::seal(
+                    &pairing,
+                    kind::DKG_DONE,
+                    DKG_SESSION,
+                    &cosigner.done()?.to_bytes(),
+                    &mut rng,
+                )?],
+            )?;
             print_seat(&seat);
             println!(
-                "  member 3 (the backup) written to {}: move it offline and delete it here. \
-                 It holds a share and sk, protect it like the seat.",
+                "  member 3 (the backup) written to {} and checked: move it offline and \
+                 delete it here. It holds a share and sk, protect it like the seat.",
                 backup_path.display()
             );
         }
         _ => return Err("--as must be coordinator or cosigner".into()),
     }
-    println!("  Compare the address with the other device before funding it.");
+    println!("  Both devices now show this address. Compare them before funding it.");
     Ok(())
 }
 
@@ -539,29 +570,18 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     match role {
         "cosigner" => {
             println!("[co-signer] signing session");
-            let (session, opening) = CosignerSession::open(&member, &mut rng);
-            carrier.send(
-                SIGN_COMMITMENTS,
-                &[Message::seal(
-                    &pairing,
-                    kind::SIGN_COMMITMENTS,
-                    &opening.session,
-                    &opening.to_bytes()?,
-                    &mut rng,
-                )?],
-            )?;
             let messages = carrier.receive(SIGN_REQUEST)?;
             one(&messages, 1)?;
             let (bound, bytes) = messages[0].open(&pairing, kind::SIGN_REQUEST)?;
             let request = Request::from_bytes(&bytes)?;
             let reply = if bound != request.session {
                 Reply::Refused {
-                    session: opening.session,
+                    session: request.session,
                     member: member.id(),
                     reason: "the request's envelope and content name different sessions".into(),
                 }
             } else {
-                match session.review(&request) {
+                match cosigning::review(&member, &request) {
                     Ok(pending) => {
                         print_report("co-signer", pending.report());
                         if ask("  Approve and sign?", flag(args, "--yes"))? {
@@ -582,7 +602,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
                     &pairing,
                     kind::SIGN_REPLY,
                     &reply.session(),
-                    &reply.to_bytes(),
+                    &reply.to_bytes()?,
                     &mut rng,
                 )?],
             )?;
@@ -592,15 +612,8 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
             let output = option(args, "--out").ok_or("--out OUT is required")?;
             let pczt = fs::read(input)?;
             println!("[coordinator] signing session");
-            let messages = carrier.receive(SIGN_COMMITMENTS)?;
-            one(&messages, 1)?;
-            let (bound, bytes) = messages[0].open(&pairing, kind::SIGN_COMMITMENTS)?;
-            let opening = Commitments::from_bytes(&bytes)?;
-            if bound != opening.session {
-                return Err("the commitments' envelope and content name different sessions".into());
-            }
             let (coordinating, request, report) =
-                CoordinatorSession::request(&member, &pczt, &opening)?;
+                CoordinatorSession::request(&member, &pczt, &mut rng)?;
             print_report("coordinator", &report);
             carrier.send(
                 SIGN_REQUEST,
@@ -614,7 +627,10 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
             )?;
             let messages = carrier.receive(SIGN_REPLY)?;
             one(&messages, 1)?;
-            let (_, bytes) = messages[0].open(&pairing, kind::SIGN_REPLY)?;
+            let (bound, bytes) = messages[0].open(&pairing, kind::SIGN_REPLY)?;
+            if bound != coordinating.session() {
+                return Err("the reply's envelope names another session".into());
+            }
             let signed = coordinating.finish(&Reply::from_bytes(&bytes)?)?;
             fs::write(output, pczt_io::serialize(signed)?)?;
             println!("  signed, every signature verified under its rk: written to {output}");

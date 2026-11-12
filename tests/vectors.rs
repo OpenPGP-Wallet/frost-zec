@@ -156,6 +156,7 @@ fn print_vectors() {
             "ufvk": keys::ufvk(&fvk, NetworkType::Main).unwrap(),
             "address": keys::address(&fvk, NetworkType::Main).unwrap(),
         },
+        "dkg_done": dkg_done_vector(ak, &keys::ufvk(&fvk, NetworkType::Main).unwrap()),
     });
     println!("{}", serde_json::to_string_pretty(&vectors).unwrap());
 }
@@ -315,4 +316,72 @@ fn vectors_match_the_spec() {
         keys::address(&fvk, NetworkType::Main).unwrap(),
         k["address"]
     );
+
+    // § 4.1: the acknowledgement's digest, recomputed from the formula.
+    let d = &v["dkg_done"];
+    let ak: [u8; 32] = arr(&d["ak"]);
+    let ufvk = d["ufvk"].as_str().unwrap();
+    let members: Vec<([u8; 32], [u8; 32])> = d["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (arr(&m["id"]), arr(&m["verifying_share"])))
+        .collect();
+    let t = d["t"].as_u64().unwrap() as u16;
+    let network = d["network"].as_u64().unwrap() as u8;
+    let mut input = vec![0u8, network];
+    input.extend_from_slice(&t.to_le_bytes());
+    input.extend_from_slice(&(members.len() as u16).to_le_bytes());
+    input.extend_from_slice(&ak);
+    for (id, share) in &members {
+        input.extend_from_slice(id);
+        input.extend_from_slice(share);
+    }
+    input.extend_from_slice(&(ufvk.len() as u32).to_le_bytes());
+    input.extend_from_slice(ufvk.as_bytes());
+    let digest = blake2b(b"ZcashFROSTv0Done", 32, &[&input]);
+    assert_eq!(hex::encode(&digest), d["digest"]);
+    assert_eq!(
+        setup::done_digest_for_vectors(network, t, &ak, &members, ufvk).to_vec(),
+        digest
+    );
+}
+
+/// The `dkg_done` vector: the group key and viewing key of `key_generation`,
+/// and fixed verifying shares (the digest does not check them).
+fn dkg_done_vector(ak: [u8; 32], ufvk: &str) -> Value {
+    let members: Vec<([u8; 32], [u8; 32])> = (1u16..=3)
+        .map(|i| {
+            let id: [u8; 32] = frost::Identifier::try_from(i)
+                .unwrap()
+                .serialize()
+                .try_into()
+                .unwrap();
+            (id, [0x40 + i as u8; 32])
+        })
+        .collect();
+    json!({
+        "network": 0,
+        "t": 2,
+        "ak": hex::encode(ak),
+        "members": members.iter().map(|(id, share)| json!({
+            "id": hex::encode(id),
+            "verifying_share": hex::encode(share),
+        })).collect::<Vec<_>>(),
+        "ufvk": ufvk,
+        "digest": hex::encode(setup::done_digest_for_vectors(0, 2, &ak, &members, ufvk)),
+    })
+}
+
+/// Prints the `dkg_done` vector for the `key_generation` vector already in the
+/// file:
+///
+///     cargo test --test vectors print_dkg_done_vector -- --ignored --nocapture
+#[test]
+#[ignore]
+fn print_dkg_done_vector() {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(FILE).unwrap()).unwrap();
+    let k = &v["key_generation"];
+    let vector = dkg_done_vector(arr(&k["ak"]), k["ufvk"].as_str().unwrap());
+    println!("{}", serde_json::to_string_pretty(&vector).unwrap());
 }

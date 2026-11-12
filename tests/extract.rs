@@ -11,7 +11,7 @@
 mod common;
 
 use common::*;
-use frost_zec::cosigning::{CoordinatorSession, CosignerSession, Member};
+use frost_zec::cosigning::{self, CoordinatorSession, Member};
 use frost_zec::{dkg, keys, pczt_io, signing};
 use pczt::roles::prover::Prover;
 use pczt::roles::tx_extractor::TransactionExtractor;
@@ -41,11 +41,15 @@ fn a_frost_signed_pczt_proves_and_extracts_into_a_valid_transaction() {
     let fvk = &members[0].fvk;
     let pczt = pczt_io::serialize(build(fvk, honest(fvk, text_memo("rent")))).unwrap();
 
-    let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
     let (coordinating, request, _) =
-        CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
+        CoordinatorSession::request(&members[0], &pczt, &mut UnwrapErr(SysRng)).unwrap();
     let signed = coordinating
-        .finish(&session.review(&request).ok().unwrap().approve())
+        .finish(
+            &cosigning::review(&members[1], &request)
+                .ok()
+                .unwrap()
+                .approve(),
+        )
         .unwrap();
 
     // Without a proof, the extractor refuses: it really verifies.

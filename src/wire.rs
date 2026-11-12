@@ -53,12 +53,15 @@ pub mod kind {
     pub const DKG_ROUND1: u8 = 32;
     /// DKG round 2 packages, `sk` reveals and the transcript echo.
     pub const DKG_ROUND2: u8 = 33;
-    /// The co-signer's nonce commitments, opening a signing session (spec § 5).
-    pub const SIGN_COMMITMENTS: u8 = 48;
-    /// The coordinator's request: the PCZT, its commitments and its shares.
-    pub const SIGN_REQUEST: u8 = 49;
-    /// The co-signer's shares, or its refusal.
-    pub const SIGN_REPLY: u8 = 50;
+    /// The co-signer's acknowledgement that key generation is done and member
+    /// 3 is exported (spec § 4).
+    pub const DKG_DONE: u8 = 34;
+    // 48 to 50 were the three signing messages of draft v0.1: reserved, so a
+    // device from that draft and one from v1.0 refuse each other's messages.
+    /// The coordinator's request: the PCZT and its commitments (spec § 5).
+    pub const SIGN_REQUEST: u8 = 51;
+    /// The co-signer's commitments and shares, or its refusal.
+    pub const SIGN_REPLY: u8 = 52;
 }
 
 /// Why a message or a QR stream was refused.

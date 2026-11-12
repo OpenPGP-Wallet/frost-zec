@@ -13,10 +13,8 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use frost_zec::channel::{Initiator, Responder};
-use frost_zec::cosigning::{
-    Commitments, CoordinatorSession, CosignerSession, Member, Reply, Request,
-};
-use frost_zec::setup::{CoordinatorSetup, CosignerSetup, Round1, Round2};
+use frost_zec::cosigning::{self, CoordinatorSession, Member, Reply, Request};
+use frost_zec::setup::{CoordinatorSetup, CosignerSetup, Done, Round1, Round2};
 use frost_zec::wire::{self, Message, Reader, kind};
 use frost_zec::{backup, check, dkg, keys, pczt_io, signing};
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
@@ -131,9 +129,8 @@ fn every_decoder_survives_mutated_input() {
         honest(&members[0].fvk, text_memo("rent")),
     ))
     .unwrap();
-    let (session, opening) = CosignerSession::open(&members[1], &mut sys);
-    let (_, request, _) = CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
-    let Ok(pending) = session.review(&request) else {
+    let (_, request, _) = CoordinatorSession::request(&members[0], &pczt, &mut sys).unwrap();
+    let Ok(pending) = cosigning::review(&members[1], &request) else {
         panic!("the honest request was refused");
     };
     let reply = pending.approve();
@@ -168,9 +165,9 @@ fn every_decoder_survives_mutated_input() {
         ("round1-cosigner", s1.to_bytes().to_vec()),
         ("round2-cosigner", s2.to_bytes().to_vec()),
         ("round2-coordinator", c2.to_bytes().to_vec()),
-        ("commitments", opening.to_bytes().unwrap()),
+        ("done", Done { digest: [7; 32] }.to_bytes()),
         ("request", request_bytes),
-        ("reply", reply.to_bytes()),
+        ("reply", reply.to_bytes().unwrap()),
         ("pczt", pczt.clone()),
     ];
 
@@ -222,29 +219,28 @@ fn every_decoder_survives_mutated_input() {
                 }
             }
             3 => {
-                let _ = Commitments::from_bytes(&input);
+                let _ = Done::from_bytes(&input);
                 let _ = Request::from_bytes(&input);
                 let _ = Reply::from_bytes(&input);
             }
             // A co-signer reviewing a malicious coordinator's request.
             4 => {
-                let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
                 let mut forged = Request::from_bytes(&input).unwrap_or_else(|_| request.clone());
-                forged.session = opening.session;
                 if *name == "pczt" {
                     forged.pczt = input.clone();
                 }
-                let _ = session.review(&forged);
+                let _ = cosigning::review(&members[1], &forged);
             }
             // An honest coordinator taking a malicious co-signer's reply.
             5 => {
-                let (_, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
                 if let Ok((coordinating, _, _)) =
-                    CoordinatorSession::request(&members[0], &pczt, &opening)
+                    CoordinatorSession::request(&members[0], &pczt, &mut UnwrapErr(SysRng))
                     && let Ok(mut forged) = Reply::from_bytes(&input)
                 {
-                    if let Reply::Shares { session, .. } = &mut forged {
-                        *session = opening.session;
+                    match &mut forged {
+                        Reply::Shares { session, .. } | Reply::Refused { session, .. } => {
+                            *session = coordinating.session();
+                        }
                     }
                     let _ = coordinating.finish(&forged);
                 }

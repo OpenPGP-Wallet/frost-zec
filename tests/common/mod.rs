@@ -64,36 +64,77 @@ pub struct Tx {
     pub fee: Option<u64>,
     /// An expiry height set by hand instead of the builder's default.
     pub expiry: Option<u32>,
+    /// The value of a second note of the owner, spent in the same bundle.
+    pub second_spend: Option<u64>,
 }
 
 pub fn fee(logical_actions: u64) -> u64 {
     MARGINAL_FEE * logical_actions.max(2)
 }
 
-fn note_for(owner: &FullViewingKey, value: u64) -> (Note, MerklePath, Anchor) {
+fn new_note(owner: &FullViewingKey, value: u64) -> Note {
     let rho = (0..)
         .find_map(|_| Rho::from_bytes(&rand::random()).into_option())
         .unwrap();
     let rseed = (0..)
         .find_map(|_| RandomSeed::from_bytes(rand::random(), &rho).into_option())
         .unwrap();
-    let note = Note::from_parts(
+    Note::from_parts(
         owner.address_at(0u32, Scope::External),
         NoteValue::from_raw(value),
         rho,
         rseed,
         NoteVersion::V3,
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn cmx(note: &Note) -> ExtractedNoteCommitment {
+    ExtractedNoteCommitment::from(note.commitment())
+}
+
+fn note_for(owner: &FullViewingKey, value: u64) -> (Note, MerklePath, Anchor) {
+    let note = new_note(owner, value);
     let path = MerklePath::from_parts(11, [MerkleHashOrchard::from_bytes(&[0; 32]).unwrap(); 32]);
-    let anchor = path.root(ExtractedNoteCommitment::from(note.commitment()));
+    let anchor = path.root(cmx(&note));
     (note, path, anchor)
+}
+
+/// Two notes side by side at positions 0 and 1 of a made-up tree, so both
+/// paths lead to the same anchor.
+fn two_notes_for(
+    owner: &FullViewingKey,
+    first: u64,
+    second: u64,
+) -> ([(Note, MerklePath); 2], Anchor) {
+    let zero = MerkleHashOrchard::from_bytes(&[0; 32]).unwrap();
+    let (a, b) = (new_note(owner, first), new_note(owner, second));
+    let mut siblings_a = [zero; 32];
+    siblings_a[0] = MerkleHashOrchard::from_cmx(&cmx(&b));
+    let mut siblings_b = [zero; 32];
+    siblings_b[0] = MerkleHashOrchard::from_cmx(&cmx(&a));
+    let (path_a, path_b) = (
+        MerklePath::from_parts(0, siblings_a),
+        MerklePath::from_parts(1, siblings_b),
+    );
+    let anchor = path_a.root(cmx(&a));
+    assert_eq!(anchor, path_b.root(cmx(&b)));
+    ([(a, path_a), (b, path_b)], anchor)
 }
 
 /// Builds the PCZT; `group` is the group whose outgoing viewing keys encrypt
 /// the outputs.
 pub fn build(group: &FullViewingKey, tx: Tx) -> Pczt {
-    let (note, path, anchor) = note_for(&tx.owner, tx.spend);
+    let (spends, anchor) = match tx.second_spend {
+        None => {
+            let (note, path, anchor) = note_for(&tx.owner, tx.spend);
+            (vec![(note, path)], anchor)
+        }
+        Some(second) => {
+            let (spends, anchor) = two_notes_for(&tx.owner, tx.spend, second);
+            (spends.to_vec(), anchor)
+        }
+    };
     let mut builder = Builder::new(
         MainNetwork,
         HEIGHT.into(),
@@ -108,9 +149,11 @@ pub fn build(group: &FullViewingKey, tx: Tx) -> Pczt {
     if let Some(expiry) = tx.expiry {
         builder = builder.with_expiry_height(expiry.into());
     }
-    builder
-        .add_ironwood_spend::<Infallible>(tx.owner.clone(), note, path)
-        .unwrap();
+    for (note, path) in spends {
+        builder
+            .add_ironwood_spend::<Infallible>(tx.owner.clone(), note, path)
+            .unwrap();
+    }
     for output in tx.outputs {
         let ovk = match output.ovk {
             Ovk::External => Some(group.to_ovk(Scope::External)),
@@ -191,5 +234,14 @@ pub fn honest(group: &FullViewingKey, memo: MemoBytes) -> Tx {
         finalize: true,
         fee: None,
         expiry: None,
+        second_spend: None,
     }
+}
+
+/// The ordinary case paid from two of the group's notes: two spends to sign.
+pub fn two_spends(group: &FullViewingKey, memo: MemoBytes) -> Tx {
+    let mut tx = honest(group, memo);
+    tx.second_spend = Some(SPEND);
+    tx.outputs[1].value = 2 * SPEND - PAYMENT - fee(2);
+    tx
 }
