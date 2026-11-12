@@ -179,6 +179,109 @@ fn a_pczt_that_skipped_the_io_finalizer_is_refused() {
     assert!(analyze(&build(&group(), tx)).is_err());
 }
 
+/// The coordinator keeps the payment and lowers the change: the fee shown is
+/// the true one, but more than ZIP 317 asks for the two actions it needs.
+#[test]
+fn a_fee_above_zip_317_is_refused() {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.outputs[1].value -= 50_000;
+    tx.fee = Some(fee(2) + 50_000);
+    let refused = analyze(&build(&group(), tx)).unwrap_err();
+    assert!(refused.contains("more than ZIP 317"), "{refused}");
+}
+
+/// ZIP 2009 lowers the marginal fee to 1,000 zatoshis: a co-signer that sees
+/// no chain accepts both rates.
+#[test]
+fn a_fee_at_the_zip_2009_rate_is_accepted() {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.outputs[1].value = SPEND - PAYMENT - 2_000;
+    tx.fee = Some(2_000);
+    let shown = analyze(&build(&group(), tx)).unwrap().lines.join("\n");
+    assert!(shown.contains("fee 0.00002000 ZEC"), "{shown}");
+}
+
+fn zero_value_output(to: orchard::Address, ovk: Ovk) -> Output {
+    Output {
+        to,
+        value: 0,
+        memo: text_memo("not shown"),
+        ovk,
+    }
+}
+
+/// Zero-value outputs on top of a payment and its change, the fee they "cost"
+/// taken from the change: the fee is ZIP 317's for the bigger transaction, so
+/// only the action count shows the padding.
+#[test]
+fn zero_value_padding_is_refused() {
+    for extra in [1, 2] {
+        let mut tx = honest(&group(), text_memo("invoice 42"));
+        tx.outputs[1].value = SPEND - PAYMENT - fee(2 + extra);
+        for _ in 0..extra {
+            tx.outputs.push(zero_value_output(
+                stranger().address_at(3u32, Scope::External),
+                Ovk::Without,
+            ));
+        }
+        let refused = analyze(&build(&group(), tx)).unwrap_err();
+        assert!(
+            refused.contains("extra ones move no value"),
+            "{extra}: {refused}"
+        );
+    }
+}
+
+/// A payment with no change leaves one slot to the builder's padding. A
+/// zero-value note to a stranger there, readable with the group's outgoing
+/// key, would land on chain with a memo the user never saw.
+#[test]
+fn a_zero_value_note_to_a_stranger_is_refused() {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.outputs[0].value = SPEND - fee(2);
+    tx.outputs[1] = zero_value_output(stranger().address_at(3u32, Scope::External), Ovk::External);
+    let refused = analyze(&build(&group(), tx)).unwrap_err();
+    assert!(
+        refused.contains("zero-value note to another address"),
+        "{refused}"
+    );
+}
+
+/// The builder's own padding cannot be read by anyone and is not shown.
+#[test]
+fn the_builders_padding_is_not_shown() {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.outputs[0].value = SPEND - fee(2);
+    tx.outputs.truncate(1);
+    let shown = analyze(&build(&group(), tx)).unwrap().lines;
+    assert_eq!(shown.len(), 4, "{shown:?}");
+    assert!(shown[1].starts_with("PAY 0.00990000 ZEC"), "{shown:?}");
+}
+
+/// A zero-value note to the group itself moves nothing, but it is signed, so
+/// it is shown with its memo.
+#[test]
+fn a_zero_value_note_to_the_group_is_shown() {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.outputs[0].value = SPEND - fee(2);
+    tx.outputs[1] = zero_value_output(group().address_at(0u32, Scope::Internal), Ovk::Internal);
+    let shown = analyze(&build(&group(), tx)).unwrap().lines.join("\n");
+    assert!(
+        shown.contains("send 0 ZEC to this group's own address\n    memo: \"not shown\""),
+        "{shown}"
+    );
+}
+
+/// A signature kept by the coordinator stays usable until the expiry height:
+/// one set far ahead is refused, not just shown.
+#[test]
+fn an_expiry_far_ahead_is_refused() {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.expiry = Some(499_999_999);
+    let refused = analyze(&build(&group(), tx)).unwrap_err();
+    assert!(refused.contains("far beyond"), "{refused}");
+}
+
 /// A unified address with several receivers, as wallets hand them out: the
 /// given Orchard receiver and a transparent one.
 fn invoice_address(orchard: &orchard::Address, network: NetworkType) -> String {
