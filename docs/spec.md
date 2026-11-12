@@ -598,3 +598,6 @@ Reviewed by Daniel Gorgonha (DeegaLabs) on the forum thread of grant #490.
 - A pairing code mismatch ends the pairing, with no quick retry (§ 3.3).
 - The signer checks are written as requirements, each with its refusal class,
   and the coordinator has its own list (§ 6).
+- The shared tamper-case format and the first cases (§ 8.2), agreed in
+  frost-zec#7 with the Konclave and PREDGE maintainers.
+- Amounts are shown in the unit of the group's network: TAZ on testnet.
