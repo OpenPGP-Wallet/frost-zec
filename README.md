@@ -94,7 +94,7 @@ from the session directory once read, and the other files when the session
 ends. `cosign --yes` skips the human approval and exists only for automated
 tests.
 
-## The QR protocol (spec draft v0.1)
+## The QR protocol (spec draft v1.0, in progress)
 
 [`docs/spec.md`](docs/spec.md) specifies how two devices of one user share a
 FROST 2-of-3 account: pairing with a six-digit code, key generation, the
@@ -107,7 +107,8 @@ commands play either side, so the protocol can be tried without the app:
 cargo run -- qr setup --as coordinator --network test --state coord --via exchange
 cargo run -- qr setup --as cosigner    --network test --state cosign --via exchange
 
-# A signing session; the co-signer shows the payment and asks for approval
+# A signing session: the coordinator sends the request, the co-signer shows
+# the payment, asks for approval and answers once
 cargo run -- qr sign --as cosigner    --state cosign --via exchange
 cargo run -- qr sign --as coordinator --state coord --via exchange --pczt tx.pczt --out signed.pczt
 ```
