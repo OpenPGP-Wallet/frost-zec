@@ -1,0 +1,35 @@
+{
+  "accepted": {
+    "sha256": "1689f690daec2f6410276eae40473ce814e9dc99c4a8ff0a6416181682e6d59f",
+    "sighash": "fc9b8f3e4c9a45c8de1f0ccfd75c58a07109f681f3b7a1fb4d6b343f7d0854d1"
+  },
+  "approved": {
+    "payments": [
+      {
+        "address": "u12f24sv04nwhcds6r2mnqv29l9hrep3ync22qh02gl9m06dmrakpyvwpkxwvvrugazjmm8s0krar4las8lv9we59q7nd4vc2e4e0fk28xk5ven07egrtndsvgwyw604pqyjqg7tycjyv",
+        "amount": 400000,
+        "memo": "invoice 42"
+      }
+    ]
+  },
+  "changed": "user_address names another unified address",
+  "class": [
+    "payment"
+  ],
+  "clock": 1794101577,
+  "description": "The address the user is shown (user_address) does not hold the receiver paid: the user would approve a payment to an address they recognize while the funds go elsewhere.",
+  "format": 1,
+  "group": {
+    "own_addresses": [
+      "u1u4zdvtcrjt4cnffw3shrx440754g0mhr4a7fenck686tfr6rdqy9wu5v39ydpgm4ut37qnlh9kpw9fsp8wcwyu2y2r5stjhj0qwfnmrq"
+    ],
+    "ufvk": "uview1pts2jac4k89kfspszysy9el720ftantyfghjurj0gnuksfzeksudh8wwdftfdlvn87wpwkzwv27unfh9s0mjh6g8w3m7zfx7yxclnqhck22kzz5x3l47ue39vy5d0896mgqyg2pgrsux694zxdthj0nr9yz5wnq86ec86qp6qljyk08udlq2vtcvjwq5e"
+  },
+  "height": 3550000,
+  "id": "user-address-not-the-one-paid",
+  "network": "main",
+  "part": "recipient",
+  "refused": {
+    "sha256": "43f5ecfee477e6f5696b2af3e8938b57a71f65f3e8191005b0eac430f83689f5"
+  }
+}

@@ -1100,6 +1100,7 @@ dependencies = [
  "rqrr",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "ur",
  "x-wing",
  "zcash_address",

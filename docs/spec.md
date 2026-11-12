@@ -490,6 +490,8 @@ independent of the co-signer; whether the kit should carry them is open.
 
 ## 8. Test vectors
 
+### 8.1 Protocol vectors
+
 `tests/fixtures/spec-vectors.json` gives fixed inputs and the expected outputs
 for:
 
@@ -509,6 +511,66 @@ for:
 calling BLAKE2b, X-Wing and XChaCha20-Poly1305 directly, and checks that the
 implementation gives the same bytes. FROST signatures are randomized, so the
 signing session has no fixed vectors; `tests/protocol.rs` runs it end to end.
+
+### 8.2 Tamper cases
+
+Shared cases for the signer checks of § 6, in `vectors/tamper/`, so that any
+co-signer can run the same set (frost-zec#7). A PCZT cannot be "tampered" on
+its own: a recipient is only swapped relative to what the user approved. So a
+case is the PCZT together with what the signer was told to expect, and every
+refused PCZT comes with an accepted twin changed in one place. A signer that
+refuses everything, or refuses for the wrong reason, does not pass. A case may
+also be accepted only, to catch signers that refuse an honest transaction.
+
+    vectors/tamper/
+      classes.md                 the refusal classes of § 6
+      <case-id>/
+        case.json
+        accepted.pczt            raw PCZT bytes (pczt crate serialization)
+        refused.pczt             absent in an accepted-only case
+
+`case.json` is a JSON object:
+
+| Field | Meaning |
+|---|---|
+| `id` | the case's directory name |
+| `format` | 1 |
+| `description`, `changed` | what the case is about, and what differs from the accepted twin (free text, for people) |
+| `class` | the refusal classes, primary first; a refused file passes if it is refused with any of them |
+| `network` | `main` or `test` |
+| `height` | the height the transaction targets |
+| `clock` | the time of block `height` in Unix seconds, or its expected time if it is not mined yet; the signer's clock during the check |
+| `fee_rule` | `zip317` or `zip2009`, required in cases whose classes include `fee`, so that editing `height` cannot silently change a case |
+| `group.ufvk` | the group's unified full viewing key |
+| `group.own_addresses` | optional: the device's own record of its receivers, for signers that check change against it |
+| `approved.payments` | what the user approved: `address`, `amount` in zatoshis, and `memo` as UTF-8 text padded with zero bytes as in ZIP 302 (no `memo`: no memo, `0xF6` then zeros; `memo_hex` for a memo that is not text) |
+| `part` | in `payment` cases, what changed: `recipient`, `amount` or `memo` |
+| `accepted.sha256`, `refused.sha256` | the SHA-256 of each file's exact bytes |
+| `accepted.sighash` | the sighash of the accepted PCZT, for runners that check the signer signs the sighash it computed |
+
+A runner passes a case when the accepted PCZT is accepted, its payments are
+shown exactly as approved and its sighash is the one given, and the refused
+PCZT is refused with one of the case's classes. A refused PCZT that is accepted
+but shows a payment other than the approved one counts as refused with class
+`payment`: the user, comparing, refuses it. Each signer maps its own errors to
+the classes; a refusal that maps to none fails.
+
+Sequence cases, for the `sighash` and `equivocation` classes, are a series of
+steps at the level of the signing call rather than single files; their shape
+comes with the first such cases.
+
+A new case tells everyone how to attack each signer that does not pass it yet.
+It is first sent privately to the maintainers listed in frost-zec#7, through
+this repository's private vulnerability reporting, and published after 14 days
+or once every listed signer passes it, whichever comes first. A listed
+maintainer can ask, before the deadline, for one extension of up to 30 days in
+all.
+
+`tests/tamper_vectors.rs` runs every case against this crate's checks, and
+writes the cases again from the PCZT factory of `tests/common` (an ignored
+test: PCZTs are randomized, so writing them again changes every file).
+`tests/tamper.rs` keeps the checks specific to this co-signer, such as the
+exact lines it shows and every single-field redaction of every action.
 
 ## 9. Open questions
 

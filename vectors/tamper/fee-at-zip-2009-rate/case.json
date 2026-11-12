@@ -1,0 +1,31 @@
+{
+  "accepted": {
+    "sha256": "e1c6345fce41f793a7780e1a5c17e61eacdf534aed584fb5badf683e38ca6a32",
+    "sighash": "1a7bd15a8004dfa86d4d70e765796988ec865d90ea5dc87b77dae57b5e023104"
+  },
+  "approved": {
+    "payments": [
+      {
+        "address": "u1evdt2sqv0hgjvmg9uhl50q7xlawxaehlvk7eldmwspz58w374kylvy0fm8mncqggldputmy5uztk384s6k7k9kkr9al5559n6cpfnkc5",
+        "amount": 400000,
+        "memo": "invoice 42"
+      }
+    ]
+  },
+  "class": [
+    "fee"
+  ],
+  "clock": 1795351839,
+  "description": "The fee is ZIP 2009's, 1,000 zatoshis per action, at a height after it starts on Mainnet.",
+  "fee_rule": "zip2009",
+  "format": 1,
+  "group": {
+    "own_addresses": [
+      "u1u4zdvtcrjt4cnffw3shrx440754g0mhr4a7fenck686tfr6rdqy9wu5v39ydpgm4ut37qnlh9kpw9fsp8wcwyu2y2r5stjhj0qwfnmrq"
+    ],
+    "ufvk": "uview1pts2jac4k89kfspszysy9el720ftantyfghjurj0gnuksfzeksudh8wwdftfdlvn87wpwkzwv27unfh9s0mjh6g8w3m7zfx7yxclnqhck22kzz5x3l47ue39vy5d0896mgqyg2pgrsux694zxdthj0nr9yz5wnq86ec86qp6qljyk08udlq2vtcvjwq5e"
+  },
+  "height": 3600000,
+  "id": "fee-at-zip-2009-rate",
+  "network": "main"
+}

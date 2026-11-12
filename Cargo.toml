@@ -64,5 +64,6 @@ required-features = ["cli"]
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 pczt = { version = "=0.10.0", features = ["io-finalizer", "zcp-builder", "signer", "prover", "tx-extractor"] }
 rand = "0.8"
+sha2 = "0.10"
 zcash_primitives = { version = "=0.31.0", default-features = false, features = ["std", "non-standard-fees"] }
 zcash_protocol = "=0.11.0"

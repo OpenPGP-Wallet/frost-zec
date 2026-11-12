@@ -1,0 +1,34 @@
+{
+  "accepted": {
+    "sha256": "fb5a49076ac154f9b18d121c8bac20154ce03f1a496f202ebfb88bd39e5fe3ae",
+    "sighash": "a7c11e413d3d072227fbf9a5603ee5e0690b450b7d8e0b9102eecc7695d61ed7"
+  },
+  "approved": {
+    "payments": [
+      {
+        "address": "u1evdt2sqv0hgjvmg9uhl50q7xlawxaehlvk7eldmwspz58w374kylvy0fm8mncqggldputmy5uztk384s6k7k9kkr9al5559n6cpfnkc5",
+        "amount": 400000,
+        "memo": "invoice 42"
+      }
+    ]
+  },
+  "changed": "one byte of the change's note ciphertext flipped",
+  "class": [
+    "unreadable-output"
+  ],
+  "clock": 1794101577,
+  "description": "The change's ciphertext does not decrypt with the group's incoming viewing key: the group would never find its change.",
+  "format": 1,
+  "group": {
+    "own_addresses": [
+      "u1u4zdvtcrjt4cnffw3shrx440754g0mhr4a7fenck686tfr6rdqy9wu5v39ydpgm4ut37qnlh9kpw9fsp8wcwyu2y2r5stjhj0qwfnmrq"
+    ],
+    "ufvk": "uview1pts2jac4k89kfspszysy9el720ftantyfghjurj0gnuksfzeksudh8wwdftfdlvn87wpwkzwv27unfh9s0mjh6g8w3m7zfx7yxclnqhck22kzz5x3l47ue39vy5d0896mgqyg2pgrsux694zxdthj0nr9yz5wnq86ec86qp6qljyk08udlq2vtcvjwq5e"
+  },
+  "height": 3550000,
+  "id": "change-ciphertext-garbled",
+  "network": "main",
+  "refused": {
+    "sha256": "608ec5180da902505de65c6294b6f4b302163fa8d054adf450479cd81a2c1dac"
+  }
+}

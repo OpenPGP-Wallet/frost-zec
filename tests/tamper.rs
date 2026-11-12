@@ -1,5 +1,8 @@
 //! Tamper suite: PCZTs a dishonest coordinator could send, which the co-signer
-//! must refuse, or show exactly as they will be signed.
+//! must refuse, or show exactly as they will be signed. Most of them are also
+//! exported as shared tamper cases (vectors/tamper/, tests/tamper_vectors.rs)
+//! for other signers; these tests keep what is specific to this co-signer,
+//! such as the exact lines it shows.
 //!
 //! The PCZTs are built with zcash_primitives' builder, spending an invented
 //! note through a made-up Merkle path, so no chain is needed. The co-signer's
@@ -13,7 +16,6 @@ use frost_zec::{check, keys, pczt_io};
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
 use pczt::Pczt;
 use pczt::roles::redactor::Redactor;
-use pczt::roles::updater::Updater;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::memo::MemoBytes;
 
@@ -81,38 +83,6 @@ fn change_without_an_outgoing_key_is_accepted() {
         shown.contains("change 0.00590000 ZEC back to this group"),
         "{shown}"
     );
-}
-
-/// Flips one byte inside the note ciphertext of the output worth `value`. The
-/// note commitment still matches the claimed note, so only decrypting the
-/// ciphertext can notice: the recipient would never find these funds.
-fn garble_ciphertext(pczt: &Pczt, value: u64) -> Pczt {
-    let mut ciphertext = None;
-    pczt::roles::low_level_signer::Signer::new(pczt.clone())
-        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
-            for action in bundle.actions() {
-                if action.output().value().map(|v| v.inner()) == Some(value) {
-                    ciphertext = Some(
-                        action
-                            .output()
-                            .encrypted_note()
-                            .enc_ciphertext
-                            .as_ref()
-                            .to_vec(),
-                    );
-                }
-            }
-            Ok(())
-        })
-        .unwrap();
-    let ciphertext = ciphertext.expect("an output with this value");
-    let mut bytes = pczt_io::serialize(pczt.clone()).unwrap();
-    let at = bytes
-        .windows(ciphertext.len())
-        .position(|window| window == ciphertext.as_slice())
-        .expect("the ciphertext in the serialized PCZT");
-    bytes[at + 100] ^= 1;
-    pczt_io::parse(&bytes).unwrap()
 }
 
 #[test]
@@ -201,15 +171,6 @@ fn a_fee_at_the_zip_2009_rate_is_accepted() {
     assert!(shown.contains("fee 0.00002000 ZEC"), "{shown}");
 }
 
-fn zero_value_output(to: orchard::Address, ovk: Ovk) -> Output {
-    Output {
-        to,
-        value: 0,
-        memo: text_memo("not shown"),
-        ovk,
-    }
-}
-
 /// Zero-value outputs on top of a payment and its change, the fee they "cost"
 /// taken from the change: the fee is ZIP 317's for the bigger transaction, so
 /// only the action count shows the padding.
@@ -254,8 +215,17 @@ fn the_builders_padding_is_not_shown() {
     tx.outputs[0].value = SPEND - fee(2);
     tx.outputs.truncate(1);
     let shown = analyze(&build(&group(), tx)).unwrap().lines;
+    // The spend, the payment and its memo line, the fee; the builder shuffles
+    // the actions, so the payment is not always the second line.
     assert_eq!(shown.len(), 4, "{shown:?}");
-    assert!(shown[1].starts_with("PAY 0.00990000 ZEC"), "{shown:?}");
+    assert_eq!(
+        shown
+            .iter()
+            .filter(|line| line.starts_with("PAY 0.00990000 ZEC"))
+            .count(),
+        1,
+        "{shown:?}"
+    );
 }
 
 /// A zero-value note to the group itself moves nothing, but it is signed, so
@@ -280,49 +250,6 @@ fn an_expiry_far_ahead_is_refused() {
     tx.expiry = Some(499_999_999);
     let refused = analyze(&build(&group(), tx)).unwrap_err();
     assert!(refused.contains("far beyond"), "{refused}");
-}
-
-/// A unified address with several receivers, as wallets hand them out: the
-/// given Orchard receiver and a transparent one.
-fn invoice_address(orchard: &orchard::Address, network: NetworkType) -> String {
-    invoice_address_in(zcash_address::unified::Revision::R0, orchard, network)
-}
-
-/// The same in a given revision of the encoding (Revision 2 gives `tu1…`).
-fn invoice_address_in(
-    revision: zcash_address::unified::Revision,
-    orchard: &orchard::Address,
-    network: NetworkType,
-) -> String {
-    use zcash_address::unified::{self, Encoding};
-    unified::Address::try_from_items(
-        revision,
-        vec![
-            unified::Uitem::Data(unified::Receiver::Orchard(orchard.to_raw_address_bytes())),
-            unified::Uitem::Data(unified::Receiver::P2pkh([7; 20])),
-        ],
-    )
-    .unwrap()
-    .encode(&network)
-}
-
-/// Writes `address` as the `user_address` of every output, as
-/// zcash_client_backend does for a payment's output.
-fn named(pczt: Pczt, address: &str) -> Pczt {
-    let count = action_count(&pczt);
-    let mut labelled = pczt;
-    for index in 0..count {
-        labelled = Updater::new(labelled)
-            .update_ironwood_with(|mut bundle| {
-                bundle.update_action_with(index, |mut action| {
-                    action.set_output_user_address(address.into());
-                    Ok(())
-                })
-            })
-            .unwrap()
-            .finish();
-    }
-    labelled
 }
 
 /// The user compares the co-signer's screen with the address they were given.
@@ -375,46 +302,13 @@ fn a_named_address_that_is_not_the_one_paid_is_refused() {
 /// Every such spend would show the same `rk` on chain.
 #[test]
 fn a_zero_randomizer_is_refused() {
-    let pczt = build(&group(), honest(&group(), MemoBytes::empty()));
-    let mut found = None;
-    pczt::roles::low_level_signer::Signer::new(pczt.clone())
-        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
-            for action in bundle.actions() {
-                let spend = action.spend();
-                if spend.value().map(|v| v.inner()) == Some(SPEND) {
-                    let alpha = spend.alpha().unwrap();
-                    found = Some((
-                        ff::PrimeField::to_repr(&alpha),
-                        <[u8; 32]>::from(spend.rk()),
-                    ));
-                }
-            }
-            Ok(())
-        })
-        .unwrap();
-    let (alpha, rk) = found.expect("the group's spend");
-    let ak: [u8; 32] = group().to_bytes()[..32].try_into().unwrap();
-    let mut bytes = pczt_io::serialize(pczt).unwrap();
-    for (old, new) in [(alpha, [0u8; 32]), (rk, ak)] {
-        let at = bytes
-            .windows(32)
-            .position(|window| window == old)
-            .expect("the field in the serialized PCZT");
-        bytes[at..at + 32].copy_from_slice(&new);
-    }
-    let refused = analyze(&pczt_io::parse(&bytes).unwrap()).unwrap_err();
+    let pczt = zero_randomizer(
+        &build(&group(), honest(&group(), MemoBytes::empty())),
+        &group(),
+        SPEND,
+    );
+    let refused = analyze(&pczt).unwrap_err();
     assert!(refused.contains("randomizer is zero"), "{refused}");
-}
-
-fn action_count(pczt: &Pczt) -> usize {
-    let mut count = 0;
-    pczt::roles::low_level_signer::Signer::new(pczt.clone())
-        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
-            count = bundle.actions().len();
-            Ok(())
-        })
-        .unwrap();
-    count
 }
 
 type Redaction = fn(&mut pczt::roles::redactor::orchard::ActionRedactor<'_>);

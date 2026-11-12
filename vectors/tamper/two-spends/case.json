@@ -1,0 +1,32 @@
+{
+  "accepted": {
+    "sha256": "c93c61bdc99132ce5a4fb9e2d482a9195279c27b4a65c2a4c8efa78479f01398",
+    "sighash": "1058617c2fab7e7fe311e53e5226e5c3ba3f260d8dd6d53f00b6b236dcf8f76a"
+  },
+  "approved": {
+    "payments": [
+      {
+        "address": "u1evdt2sqv0hgjvmg9uhl50q7xlawxaehlvk7eldmwspz58w374kylvy0fm8mncqggldputmy5uztk384s6k7k9kkr9al5559n6cpfnkc5",
+        "amount": 400000,
+        "memo": "invoice 42"
+      }
+    ]
+  },
+  "class": [
+    "padding",
+    "fee"
+  ],
+  "clock": 1794101577,
+  "description": "Two of the group's notes pay one payment and its change: two actions, the fee ZIP 317's for two.",
+  "fee_rule": "zip317",
+  "format": 1,
+  "group": {
+    "own_addresses": [
+      "u1u4zdvtcrjt4cnffw3shrx440754g0mhr4a7fenck686tfr6rdqy9wu5v39ydpgm4ut37qnlh9kpw9fsp8wcwyu2y2r5stjhj0qwfnmrq"
+    ],
+    "ufvk": "uview1pts2jac4k89kfspszysy9el720ftantyfghjurj0gnuksfzeksudh8wwdftfdlvn87wpwkzwv27unfh9s0mjh6g8w3m7zfx7yxclnqhck22kzz5x3l47ue39vy5d0896mgqyg2pgrsux694zxdthj0nr9yz5wnq86ec86qp6qljyk08udlq2vtcvjwq5e"
+  },
+  "height": 3550000,
+  "id": "two-spends",
+  "network": "main"
+}

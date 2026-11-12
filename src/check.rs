@@ -267,11 +267,24 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Verifies and describes a PCZT that spends from the group `fvk`.
+/// Verifies and describes a PCZT that spends from the group `fvk`, with this
+/// computer's clock.
 pub fn analyze(
     pczt: &Pczt,
     fvk: &FullViewingKey,
     network: NetworkType,
+) -> Result<Report, Box<dyn Error>> {
+    analyze_at(pczt, fvk, network, now())
+}
+
+/// [`analyze`] with the clock given, in Unix seconds: what bounds the expiry
+/// height. For tests and shared tamper cases, which fix the time they are
+/// checked at (spec § 8.2).
+pub fn analyze_at(
+    pczt: &Pczt,
+    fvk: &FullViewingKey,
+    network: NetworkType,
+    now: u64,
 ) -> Result<Report, Box<dyn Error>> {
     // Every part of the transaction is covered by the signature. A part this
     // co-signer does not decode could carry value away without being shown:
@@ -307,7 +320,7 @@ pub fn analyze(
         warnings.push(pre_authorization(
             *pczt.global().expiry_height(),
             network,
-            now(),
+            now,
         )?);
     }
     if let Some(lock_time) = pczt.global().fallback_lock_time().filter(|t| *t != 0) {
