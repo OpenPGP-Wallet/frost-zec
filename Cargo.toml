@@ -67,6 +67,10 @@ required-features = ["cli"]
 name = "qr_bench"
 required-features = ["camera"]
 
+[[example]]
+name = "frames_replay"
+required-features = ["camera"]
+
 [dev-dependencies]
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 pczt = { version = "=0.10.0", features = ["io-finalizer", "zcp-builder", "signer", "prover", "tx-extractor"] }
