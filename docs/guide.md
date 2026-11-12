@@ -16,7 +16,8 @@ for ZCG grant #490, Milestone 1.
 
 ## What you need
 
-- OpenPGP Wallet with a wallet created, in a version that has the FROST tab.
+- OpenPGP Wallet 2.16.1 or later, with a wallet created
+  ([releases](https://github.com/OpenPGP-Wallet/openpgp-wallet/releases)).
 - The co-signer, built from this repository with a Rust toolchain:
 
   ```bash
@@ -29,8 +30,8 @@ for ZCG grant #490, Milestone 1.
     wallet's screen, and a webcam on the wallet's computer facing the
     co-signer's screen; or
   - **text:** both on one computer, passing each message as a
-    `ur:zcash-frost/...` text (the wallet's "Copy as text" and "Paste" fields,
-    and text files on the co-signer's side).
+    `ur:zcash-frost/...` text through the clipboard (the wallet's **Copy as
+    text** and **Paste the co-signer's message** buttons), or as text files.
 - Coins: testnet ZEC (TAZ) from a faucet or another tester, or about 0.002 ZEC
   on Mainnet.
 
@@ -103,12 +104,21 @@ once they have enough confirmations (a few minutes since NU7).
 
 ## The text variant (one computer, no camera)
 
-Use `--via clipboard` on the co-signer instead of `--via qr`. It puts each of
-its messages on the clipboard and rings the terminal bell: press Ctrl+V in the
-wallet's window, which takes it at once. When the wallet shows a message,
-click **Copy as text**: the co-signer takes it from the clipboard by itself.
-The co-signer clears the clipboard when it starts, so start it before copying
-the wallet's first message.
+Use `--via clipboard` on the co-signer instead of `--via qr`. Two rules carry
+the whole run:
+
+- **Wallet to co-signer:** when the wallet shows a message, click **Copy as
+  text**. The co-signer takes it from the clipboard by itself: never paste
+  anything into the co-signer's window.
+- **Co-signer to wallet:** the co-signer puts each of its messages on the
+  clipboard and rings the terminal bell. In the wallet, click **Paste the
+  co-signer's message** (or press Ctrl+V in its window).
+
+If you copy anything else between the bell and the paste, the message is gone
+from the clipboard: press Enter in the co-signer's window, and it puts its
+last message there again. At a `[y/N]` question, though, Enter alone answers
+no. The co-signer clears the clipboard when it starts, so start it before
+copying the wallet's first message.
 
 With `--via DIR` instead, each message the co-signer sends is written to DIR as
 a text file, and each message it expects is read from DIR, for files carried
@@ -127,16 +137,39 @@ between two machines:
 
 The co-signer reads a file once it is complete and deletes it after use.
 
+## Start over with a new account
+
+The wallet holds one FROST account per network. To run the guide again:
+
+1. In the FROST tab, under the account, click **Remove this account from the
+   wallet**, then **OK** in the Windows window, which says what the account
+   still holds. Nothing is deleted: the account's files move to
+   `zcash_frost_removed` in the wallet's data folder
+   (`%APPDATA%\com.pgpwalletpoc.app`), and moving them back restores the
+   account and its funds.
+2. Give the co-signer a new `--state` folder: it refuses to create an account
+   in a folder that already holds one. Keep the old folder if coins are left
+   on the old account.
+
 ## If something goes wrong
 
+- **Windows blocks the co-signer** ("Smart App Control blocked a potentially
+  dangerous file"): a program or script downloaded unsigned is blocked.
+  Right-click the archive, **Properties**, tick **Unblock**, then extract it
+  again; or build the co-signer from source.
 - **The codes differ:** cancel on both sides and start again. Do not confirm.
+- **The wallet finds no co-signer message on the clipboard:** wait for the
+  bell, or press Enter in the co-signer's window to copy its last message
+  again.
 - **Sync fails:** the wallet shows the server's error under the account. On
   testnet there is one public server, which sometimes lags; try again later.
 - **The last setup step fails** (network, wrong password): fix the cause and
-  read the co-signer's keys again; the pairing is kept.
+  read or paste the co-signer's keys again (Enter in its window copies them
+  again); the pairing is kept.
 - **The co-signer refuses a request:** it prints why. Do not override it.
 
 ## What to report
 
-For Milestone 1, please send the transaction id(s), the network, how long each
-part took, and anything in this guide that was unclear or wrong.
+For Milestone 1, please send the transaction id(s) (the wallet's **Copy the
+transaction ID** button), the network, how long each part took, and anything
+in this guide that was unclear or wrong.
