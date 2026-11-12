@@ -16,7 +16,7 @@ for ZCG grant #490, Milestone 1.
 
 ## What you need
 
-- OpenPGP Wallet 2.16.1 or later, with a wallet created
+- OpenPGP Wallet 2.16.2 or later, with a wallet created
   ([releases](https://github.com/OpenPGP-Wallet/openpgp-wallet/releases)).
 - The co-signer, built from this repository with a Rust toolchain:
 
@@ -61,9 +61,14 @@ The steps below use QR codes. The text variant is at the end.
 4. In the wallet, enter your password, then read the co-signer's next QR code
    (its keys), and press Enter on the co-signer.
 5. The wallet shows a last QR code and the account's address. Let the
-   co-signer read it, and check that **both show the same address**. Then
-   click **Done** in the wallet.
-6. The co-signer has written `my-cosigner/member3-backup.txt`, the backup
+   co-signer read it, and **wait until the co-signer shows an address**: it
+   computes its own share and the backup's from this last message. Without
+   it, the account can never sign, and coins sent to it are lost.
+6. In the wallet, click **The co-signer shows the same address…**. A Windows
+   window shows the whole address: choose **OK** only if it is exactly the
+   one the co-signer shows. Until then, the account's card says the setup is
+   not finished, shows no address and cannot receive.
+7. The co-signer has written `my-cosigner/member3-backup.txt`, the backup
    member. Copy it to an offline medium (a USB stick you keep apart) and
    delete it from the computer. With it and the account's viewing key, member
    3 can be rebuilt in any wallet that implements the member backup string
@@ -158,6 +163,13 @@ The wallet holds one FROST account per network. To run the guide again:
   Right-click the archive, **Properties**, tick **Unblock**, then extract it
   again; or build the co-signer from source.
 - **The codes differ:** cancel on both sides and start again. Do not confirm.
+- **The account says the setup is not finished:** send nothing to it. If the
+  co-signer showed the account's address, click **The co-signer shows the
+  same address…** on the card and compare. If it never did, remove the account
+  and set it up again (see "Start over with a new account").
+- **The co-signer's network differs** ("the coordinator set up the group for
+  another network"): start the co-signer with the `--network` of the account
+  being created (`test` for **Create on testnet**).
 - **The wallet finds no co-signer message on the clipboard:** wait for the
   bell, or press Enter in the co-signer's window to copy its last message
   again.
