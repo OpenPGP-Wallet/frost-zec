@@ -18,7 +18,7 @@ use pczt::roles::io_finalizer::IoFinalizer;
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
 use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
-use zcash_primitives::transaction::fees::zip317;
+use zcash_primitives::transaction::fees::{fixed, zip317};
 use zcash_protocol::consensus::MainNetwork;
 use zcash_protocol::memo::MemoBytes;
 use zcash_protocol::value::Zatoshis;
@@ -59,6 +59,11 @@ pub struct Tx {
     pub orchard_payment: Option<(Address, u64)>,
     /// Run the IO Finalizer (signs and clears the dummy spends).
     pub finalize: bool,
+    /// A fee set by hand instead of ZIP 317's: the outputs must leave exactly
+    /// this much.
+    pub fee: Option<u64>,
+    /// An expiry height set by hand instead of the builder's default.
+    pub expiry: Option<u32>,
 }
 
 pub fn fee(logical_actions: u64) -> u64 {
@@ -100,6 +105,9 @@ pub fn build(group: &FullViewingKey, tx: Tx) -> Pczt {
             ironwood_padding: BundlePadding::DEFAULT,
         },
     );
+    if let Some(expiry) = tx.expiry {
+        builder = builder.with_expiry_height(expiry.into());
+    }
     builder
         .add_ironwood_spend::<Infallible>(tx.owner.clone(), note, path)
         .unwrap();
@@ -134,9 +142,17 @@ pub fn build(group: &FullViewingKey, tx: Tx) -> Pczt {
             )
             .unwrap();
     }
-    let result = builder
-        .build_for_pczt(UnwrapErr(SysRng), &zip317::FeeRule::standard())
-        .unwrap();
+    let result = match tx.fee {
+        None => builder
+            .build_for_pczt(UnwrapErr(SysRng), &zip317::FeeRule::standard())
+            .unwrap(),
+        Some(fee) => builder
+            .build_for_pczt(
+                UnwrapErr(SysRng),
+                &fixed::FeeRule::non_standard(Zatoshis::from_u64(fee).unwrap()),
+            )
+            .unwrap(),
+    };
     let pczt = Creator::build_from_parts(result.pczt_parts).unwrap();
     if tx.finalize {
         IoFinalizer::new(pczt)
@@ -173,5 +189,7 @@ pub fn honest(group: &FullViewingKey, memo: MemoBytes) -> Tx {
         ],
         orchard_payment: None,
         finalize: true,
+        fee: None,
+        expiry: None,
     }
 }

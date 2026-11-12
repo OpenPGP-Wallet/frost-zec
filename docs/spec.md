@@ -235,18 +235,39 @@ Already implemented in `src/check.rs`, before any signature:
 - a witness, when present, must lead to the bundle's anchor;
 - outputs are sorted into payments and change with the group's viewing key,
   and the fee is the difference. It must equal the bundle's signed value
-  balance;
-- every output's note ciphertext is decrypted, which proves it holds the very
-  note committed to, so its recipient can find it. The group's own outputs
+  balance, and it may not exceed ZIP 317's marginal fee (5,000 zatoshis, the
+  rate before ZIP 2009 lowers it to 1,000; both pass) times the actions the
+  payments need, `max(2, spends with value, outputs with value)`. A
+  transaction with more actions than that is refused: zero-value actions
+  beyond the builder's padding to two would let a raised fee pass for ZIP
+  317's fee of a bigger transaction. A coordinator that spends more notes than
+  needed, or splits the change into several outputs, is not detected: the
+  co-signer does not know which notes a payment should spend;
+- a zero-value output is read with the group's outgoing viewing key. One that
+  holds a note to another address is refused, since it would land on chain
+  with a memo the user was never shown; one to the group itself is shown with
+  its memo. The builder's padding cannot be read by anyone and is not shown.
+  A zero-value output encrypted without the group's outgoing key cannot be
+  told from padding; the action bound above leaves room for one at most;
+- every output with a value has its note ciphertext decrypted, which proves it
+  holds the very note committed to, so its recipient can find it. The group's own outputs
   (change) are decrypted with its incoming viewing key, as its wallet will when
   scanning; payments are read back with the group's outgoing viewing key, so
   coordinators must encrypt payments to it. The memo shown comes from that
   decryption, with control characters and characters that reorder or hide
   text escaped (quotes and accents are shown as they are);
 - a non-zero lock time is shown;
-- a transaction that never expires is refused; the device warns that a v6
-  signature does not prove the spent notes exist, and authorizes these exact
-  payments until the expiry height;
+- a transaction that never expires is refused, and so is one that expires more
+  than 1,000 blocks beyond the current height as the device's clock bounds it:
+  from a recent checkpoint, the co-signer counts a block every 20 seconds on
+  Mainnet and every 10 on testnet, faster than either keeps up (the target
+  spacing is 25 seconds since NU7, ZIP 218), so the bound stays above the real
+  height. A coordinator holding a signature with a far
+  expiry could broadcast it much later, for example after the user, told the
+  first attempt failed, approved the same payment again. The device warns that
+  a v6 signature does not prove the spent notes exist, and authorizes these
+  exact payments until the expiry height, shown on Mainnet with roughly how
+  long that is from now;
 - the sighash is computed on the device, never taken from the coordinator;
 - the coordinator's signature shares are aggregated with the co-signer's own,
   and each signature is verified under the spend's `rk` before the user is

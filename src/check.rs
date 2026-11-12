@@ -29,6 +29,37 @@ use crate::pczt_io::TxError;
 /// 0.0003 ZEC for a few actions).
 const HIGH_FEE: u64 = 100_000;
 
+/// ZIP 317's marginal fee per logical action, in zatoshis. ZIP 2009 (Proposed)
+/// lowers it to 1,000 from block 3,590,000 on Mainnet and 4,465,026 on testnet.
+/// The co-signer sees no chain, so it accepts any fee up to the old rate for
+/// the actions a payment needs: both rates pass around that height.
+const MAX_MARGINAL_FEE: u64 = 5_000;
+
+/// ZIP 317's grace actions: a bundle is padded to at least two actions.
+const GRACE_ACTIONS: usize = 2;
+
+/// A recent block of each network, its height and time (Unix seconds), and a
+/// block spacing faster than the network ever keeps up for long. From these and
+/// this computer's clock, the co-signer bounds the current height from above.
+///
+/// The target spacing is 25 seconds since NU7 (ZIP 218). Mainnet keeps to it
+/// (25.0 s on average from 2026-11-09 to 2026-11-12), so 20 s leaves room. Testnet
+/// runs faster (about 18 s on 2026-11-12), so it is counted at 10 s.
+const CHECKPOINTS: [(NetworkType, u32, u64, u64); 2] = [
+    // 2026-11-10 15:39:24 UTC
+    (NetworkType::Main, 3_558_933, 1_794_325_164, 20),
+    // 2026-11-12 16:49:09 UTC
+    (NetworkType::Test, 4_612_900, 1_794_502_149, 10),
+];
+
+/// The target spacing since NU7, to say roughly when the expiry falls. Shown on
+/// Mainnet only: testnet does not keep to it.
+const TARGET_BLOCK_SECS: u64 = 25;
+
+/// How far beyond that estimate an expiry may be. Wallets set it minutes ahead
+/// (zcash_primitives: 120 blocks since NU7, 50 minutes).
+const EXPIRY_MARGIN_BLOCKS: u64 = 1_000;
+
 /// The total supply of ZEC in zatoshis: no honest amount can be larger.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
@@ -175,18 +206,65 @@ fn payment_address(
 /// (ZIP 374 lets them be set after signing), so signing does not prove that the
 /// spent notes exist on chain: it authorizes exactly these payments for as long
 /// as the transaction can be mined, whenever those notes exist. The expiry
-/// height is what bounds that; a transaction that never expires is refused.
-fn pre_authorization(expiry_height: u32) -> Result<String, TxError> {
+/// height is what bounds that. A transaction that never expires is refused, and
+/// so is one that expires far beyond the current height as this computer's clock
+/// bounds it: a coordinator could keep such a signature and broadcast it much
+/// later, for example after the user, told it failed, approved the same payment
+/// again. `now` is the clock, in Unix seconds.
+fn pre_authorization(
+    expiry_height: u32,
+    network: NetworkType,
+    now: u64,
+) -> Result<String, TxError> {
     if expiry_height == 0 {
         return Err(TxError::Refused(
             "the transaction never expires: a pre-authorized v6 spend would stay valid forever"
                 .into(),
         ));
     }
+    let mut when = String::new();
+    let checkpoint = CHECKPOINTS.iter().find(|(net, ..)| *net == network);
+    if let Some(&(_, height, time, fastest)) = checkpoint {
+        let elapsed = now.saturating_sub(time);
+        let highest = u64::from(height) + elapsed / fastest;
+        if u64::from(expiry_height) > highest + EXPIRY_MARGIN_BLOCKS {
+            return Err(TxError::Refused(format!(
+                "the transaction stays valid until block {expiry_height}, far beyond the current \
+                 height (at most about {highest} by this computer's clock): a signature must not \
+                 stay usable that long. If this computer's clock is wrong, set it right"
+            )));
+        }
+        if network == NetworkType::Main {
+            let expected = u64::from(height) + elapsed / TARGET_BLOCK_SECS;
+            when = match u64::from(expiry_height).checked_sub(expected) {
+                Some(blocks) => {
+                    format!(", about {} from now", duration(blocks * TARGET_BLOCK_SECS))
+                }
+                None => ", a height already passed by this computer's clock".into(),
+            };
+        }
+    }
     Ok(format!(
         "v6 pre-authorization: this signature does not prove the spent notes exist on chain; \
-         it authorizes these exact payments if they do, until block {expiry_height}"
+         it authorizes these exact payments if they do, until block {expiry_height}{when}"
     ))
+}
+
+/// A rough duration, for the expiry warning.
+fn duration(secs: u64) -> String {
+    match secs {
+        0..7_200 => format!("{} min", secs.div_ceil(60)),
+        7_200..172_800 => format!("{} h", secs / 3_600),
+        _ => format!("{} days", secs / 86_400),
+    }
+}
+
+/// This computer's clock, in Unix seconds (0 if it is set before 1970).
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 /// Verifies and describes a PCZT that spends from the group `fvk`.
@@ -219,9 +297,18 @@ pub fn analyze(
     let mut change = 0u64;
     let mut value_balance = None;
     let mut randomizers = BTreeSet::new();
+    // What bounds the fee: how many actions the transaction has, and how many
+    // it needs to move its value.
+    let mut actions = 0usize;
+    let mut valued_spends = 0usize;
+    let mut valued_outputs = 0usize;
 
     if *pczt.global().tx_version() == V6_TX_VERSION {
-        warnings.push(pre_authorization(*pczt.global().expiry_height())?);
+        warnings.push(pre_authorization(
+            *pczt.global().expiry_height(),
+            network,
+            now(),
+        )?);
     }
     if let Some(lock_time) = pczt.global().fallback_lock_time().filter(|t| *t != 0) {
         lines.push(format!("not valid before lock time {lock_time}"));
@@ -283,10 +370,37 @@ pub fn analyze(
                 .verify_note_commitment(spend)
                 .map_err(|e| refuse(&format!("action {index}: output note"), &e))?;
             add(&mut spent, spend_value)?;
+            actions += 1;
             if spend_value > 0 {
+                valued_spends += 1;
                 lines.push(format!("spend {} from this group", zec(spend_value)));
             }
-            if output_value > 0 {
+            if output_value == 0 {
+                // A zero-value output is signed like any other. The builder's
+                // padding cannot be read by anyone; one the coordinator added
+                // and encrypted to the group's outgoing key can, and it would
+                // land on chain with a recipient and memo nobody was shown. One
+                // encrypted without that key cannot be told from padding: the
+                // action count below leaves no room for more than the padding.
+                let recovered = action
+                    .recover_output_with_ovk(&external_ovk, bundle_version)
+                    .and_then(|found| match found {
+                        Some(found) => Ok(Some(found)),
+                        None => action.recover_output_with_ovk(&internal_ovk, bundle_version),
+                    })
+                    .map_err(|e| refuse(&format!("action {index}: note encryption"), &e))?;
+                if let Some((_, address, memo)) = recovered {
+                    if fvk.scope_for_address(&address).is_none() {
+                        return Err(TxError::Refused(format!(
+                            "action {index}: a zero-value note to another address, with a memo \
+                             the user would not be shown"
+                        )));
+                    }
+                    lines.push("send 0 ZEC to this group's own address".into());
+                    lines.push(format!("    {}", describe_memo(&memo)));
+                }
+            } else {
+                valued_outputs += 1;
                 let recipient = output.recipient().ok_or_else(|| {
                     TxError::Refused(format!("action {index}: output without recipient"))
                 })?;
@@ -374,6 +488,31 @@ pub fn analyze(
         .into());
     }
     lines.push(format!("fee {}", zec(fee)));
+    // ZIP 317 charges per action, so a coordinator could pad the transaction
+    // with zero-value actions and make a raised fee look like the honest fee
+    // of a bigger transaction. The builder pads a bundle to two actions and no
+    // further: more than that, beyond the notes spent and paid, is refused,
+    // and so is a fee above ZIP 317's rate for the actions that remain. This
+    // does not catch a coordinator that spends more notes than needed or
+    // splits the change: the co-signer does not know which notes a payment
+    // should spend.
+    let needed = valued_spends.max(valued_outputs).max(GRACE_ACTIONS);
+    if actions > needed {
+        return Err(format!(
+            "the transaction has {actions} actions where its payments need {needed}: the \
+             extra ones move no value"
+        )
+        .into());
+    }
+    let max_fee = MAX_MARGINAL_FEE * needed as u64;
+    if fee > max_fee {
+        return Err(format!(
+            "the fee ({}) is more than ZIP 317 asks for {needed} actions ({})",
+            zec(fee),
+            zec(max_fee)
+        )
+        .into());
+    }
     if fee > HIGH_FEE {
         warnings.push(format!("high fee: {}", zec(fee)));
     }
@@ -624,10 +763,70 @@ mod tests {
             .unwrap();
         let expiry = *pczt.global().expiry_height();
         assert!(
-            pre_authorization(expiry)
+            pre_authorization(expiry, NetworkType::Test, now())
                 .unwrap()
                 .contains(&format!("until block {expiry}"))
         );
-        assert!(pre_authorization(0).is_err());
+        assert!(pre_authorization(0, NetworkType::Test, now()).is_err());
+    }
+
+    /// An honest expiry, minutes ahead of the current height, passes; one far
+    /// beyond what the clock allows is refused, on either network. A slow clock
+    /// refuses rather than accepts.
+    #[test]
+    fn the_expiry_is_bounded_by_the_clock() {
+        for (network, height, time, fastest) in CHECKPOINTS {
+            let height = u64::from(height);
+            let at = |blocks: u64| u32::try_from(height + blocks).unwrap();
+            // At the checkpoint, the wallet's default expiry (120 blocks ahead).
+            assert!(pre_authorization(at(120), network, time).is_ok());
+            // A day later, at the target pace, the chain is 3,456 blocks further.
+            let day = time + 86_400;
+            assert!(pre_authorization(at(3_456 + 120), network, day).is_ok());
+            // At the fastest pace counted for this network: still accepted.
+            assert!(pre_authorization(at(86_400 / fastest + 120), network, day).is_ok());
+            for far in [at(86_400 / fastest + EXPIRY_MARGIN_BLOCKS + 1), 499_999_999] {
+                let refused = pre_authorization(far, network, day).unwrap_err();
+                assert!(
+                    matches!(&refused, TxError::Refused(reason) if reason.contains("far beyond")),
+                    "{refused:?}"
+                );
+            }
+            // A clock set before the checkpoint counts no time since it.
+            assert!(pre_authorization(at(3_456 + 120), network, 0).is_err());
+            // An expiry already behind the estimate is not refused: it cannot
+            // be mined, so it authorizes nothing.
+            assert!(pre_authorization(at(0) - 10, network, day).is_ok());
+        }
+    }
+
+    /// Mainnet keeps to the target spacing, so the warning says roughly when the
+    /// expiry falls; testnet does not, so it gives the height alone.
+    #[test]
+    fn the_expiry_is_dated_on_mainnet_only() {
+        let (_, main, main_time, _) = CHECKPOINTS[0];
+        let shown = pre_authorization(main + 120, NetworkType::Main, main_time).unwrap();
+        assert!(shown.ends_with("about 50 min from now"), "{shown}");
+        let past = pre_authorization(main - 10, NetworkType::Main, main_time).unwrap();
+        assert!(
+            past.ends_with("already passed by this computer's clock"),
+            "{past}"
+        );
+        let (_, test, test_time, _) = CHECKPOINTS[1];
+        let shown = pre_authorization(test + 120, NetworkType::Test, test_time).unwrap();
+        assert!(
+            shown.ends_with(&format!("until block {}", test + 120)),
+            "{shown}"
+        );
+        // Regtest has no checkpoint: only "never expires" is refused there.
+        assert!(pre_authorization(499_999_999, NetworkType::Regtest, now()).is_ok());
+    }
+
+    #[test]
+    fn durations_are_rounded_for_reading() {
+        assert_eq!(duration(3_000), "50 min");
+        assert_eq!(duration(3_001), "51 min");
+        assert_eq!(duration(7_200), "2 h");
+        assert_eq!(duration(86_400 * 3), "3 days");
     }
 }
