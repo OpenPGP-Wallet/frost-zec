@@ -269,46 +269,57 @@ impl Group {
         backup::Backup::new(&self.member.key_package, MAX_SIGNERS, &self.sk)?.encode()
     }
 
-    /// The digest of the group this member ended with: its parameters, the
-    /// group key, every member's verifying share and the viewing key. Both
-    /// devices compute it; the co-signer sends its own in [`Done`].
+    /// The digest of the group this member ended with ([`group_digest`]).
     pub fn digest(&self) -> Result<[u8; 32], Box<dyn Error>> {
-        let pkp = &self.member.public_key_package;
-        let mut members = Vec::new();
-        for (id, share) in pkp.verifying_shares() {
-            let id: [u8; 32] = id.serialize().try_into().map_err(|_| "identifier size")?;
-            let share: [u8; 32] = share.serialize()?.try_into().map_err(|_| "share size")?;
-            members.push((id, share));
-        }
-        done_digest(
-            network_byte(self.member.network)?,
-            *self.member.key_package.min_signers(),
-            &signing::group_ak(pkp)?,
-            &members,
-            &self.ufvk,
-        )
+        group_digest(&self.member, &self.ufvk)
     }
 
     /// The co-signer's acknowledgement, once member 3 is exported, checked
     /// and deleted.
     pub fn done(&self) -> Result<Done, Box<dyn Error>> {
-        Ok(Done {
-            digest: self.digest()?,
-        })
+        Done::new(&self.member, &self.ufvk)
     }
 
     /// The coordinator's check of the co-signer's acknowledgement: until it
     /// holds, the coordinator shows no address to fund.
     pub fn check_done(&self, done: &Done) -> Result<(), Box<dyn Error>> {
-        if done.digest != self.digest()? {
-            return Err(
-                "the co-signer ended key generation with a different group: \
-                        do not use this account"
-                    .into(),
-            );
-        }
-        Ok(())
+        check_done(&self.member, &self.ufvk, done)
     }
+}
+
+/// The digest of the group `member` belongs to, whose unified full viewing key
+/// is `ufvk`: its parameters, the group key, every member's verifying share and
+/// the viewing key (spec § 4.1). Both devices compute it; the co-signer sends
+/// its own in [`Done`]. Needs no secret, so a device can compute it again later
+/// from what it stored.
+pub fn group_digest(member: &Member, ufvk: &str) -> Result<[u8; 32], Box<dyn Error>> {
+    let pkp = &member.public_key_package;
+    let mut members = Vec::new();
+    for (id, share) in pkp.verifying_shares() {
+        let id: [u8; 32] = id.serialize().try_into().map_err(|_| "identifier size")?;
+        let share: [u8; 32] = share.serialize()?.try_into().map_err(|_| "share size")?;
+        members.push((id, share));
+    }
+    done_digest(
+        network_byte(member.network)?,
+        *member.key_package.min_signers(),
+        &signing::group_ak(pkp)?,
+        &members,
+        ufvk,
+    )
+}
+
+/// The coordinator's check of the co-signer's acknowledgement, from what it
+/// stored: `member` and the group's `ufvk`.
+pub fn check_done(member: &Member, ufvk: &str, done: &Done) -> Result<(), Box<dyn Error>> {
+    if done.digest != group_digest(member, ufvk)? {
+        return Err(
+            "the co-signer ended key generation with a different group: \
+                    do not use this account"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// `D` of spec § 4.1, from its parts: `members` holds each member's 32-byte
@@ -380,6 +391,15 @@ pub struct Done {
 }
 
 impl Done {
+    /// The acknowledgement for the group `member` belongs to, whose viewing key
+    /// is `ufvk`. A co-signer sends it once member 3 is exported, checked and
+    /// deleted, and may send it again later from what it stored.
+    pub fn new(member: &Member, ufvk: &str) -> Result<Done, Box<dyn Error>> {
+        Ok(Done {
+            digest: group_digest(member, ufvk)?,
+        })
+    }
+
     /// The CBOR encoding.
     pub fn to_bytes(&self) -> Vec<u8> {
         minicbor::to_vec(self).expect("encoding to memory cannot fail")

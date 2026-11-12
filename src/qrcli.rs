@@ -4,6 +4,7 @@
 //!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR|qr|clipboard] [--yes]
 //!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--yes]
 //!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR|qr|clipboard]
+//!   qr done [--state DIR] [--via DIR|qr|clipboard]
 //!   qr info [--state DIR]
 //!
 //! With `--via qr`, every message is shown as an animated QR code and the
@@ -63,7 +64,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         Some("setup") => setup(&args[1..]),
         Some("sign") => sign(&args[1..]),
         Some("info") => info(&args[1..]),
-        _ => Err("usage: frost-zec qr <setup | sign | info> [options] (see src/qrcli.rs)".into()),
+        Some("done") => done(&args[1..]),
+        _ => Err(
+            "usage: frost-zec qr <setup | sign | done | info> [options] (see src/qrcli.rs)".into(),
+        ),
     }
 }
 
@@ -553,6 +557,30 @@ fn print_seat(seat: &Seat) {
     println!("  network:     {}", seat.network);
     println!("  viewing key: {}", seat.ufvk);
     println!("  address:     {}", seat.address);
+}
+
+/// The co-signer's acknowledgement again, from its seat, for a coordinator
+/// that did not get it at the end of the setup (spec § 4.1).
+fn done(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let seat = Seat::load(&state_dir(args))?;
+    if seat.role != "cosigner" {
+        return Err("only the co-signer sends the acknowledgement".into());
+    }
+    let pairing = seat.pairing()?;
+    let member = seat.member()?;
+    let done = Done::new(&member, &seat.ufvk)?;
+    Carrier::from_args(args)?.send(
+        COSIGNER_DONE,
+        &[Message::seal(
+            &pairing,
+            kind::DKG_DONE,
+            DKG_SESSION,
+            &done.to_bytes(),
+            &mut rng(),
+        )?],
+    )?;
+    print_seat(&seat);
+    Ok(())
 }
 
 fn info(args: &[String]) -> Result<(), Box<dyn Error>> {

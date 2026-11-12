@@ -90,6 +90,20 @@ fn two_processes_pair_generate_keys_and_sign() {
     assert_eq!(address, seat_field(Path::new(s), "address"));
     assert!(Path::new(s).join("member3-backup.txt").exists());
 
+    // The co-signer can show its acknowledgement again; a coordinator cannot.
+    let ack = Path::new(via).join("6-cosigner-done.ur");
+    let _ = std::fs::remove_file(&ack);
+    wait(vec![frost_zec(&["qr", "done", "--state", s, "--via", via])]);
+    assert!(ack.exists());
+    let status = Command::new(env!("CARGO_BIN_EXE_frost-zec"))
+        .args(["qr", "done", "--state", c, "--via", via])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    let _ = std::fs::remove_file(&ack);
+
     let (_, fvk) = keys::parse_ufvk(&seat_field(Path::new(c), "ufvk")).unwrap();
     let pczt = pczt_io::serialize(build(&fvk, honest(&fvk, text_memo("rent")))).unwrap();
     let (input, output) = (root.join("unsigned.pczt"), root.join("signed.pczt"));
