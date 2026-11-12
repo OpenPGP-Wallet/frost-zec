@@ -208,6 +208,9 @@ struct Clipboard {
     board: arboard::Clipboard,
     /// The last text put or taken, so that it is not taken (again) as an answer.
     last: String,
+    /// The last message this side put, with its name: copying anything else
+    /// before pasting it loses it, so Enter puts it back.
+    sent: Option<(String, String)>,
 }
 
 impl Clipboard {
@@ -220,6 +223,7 @@ impl Clipboard {
         Ok(Clipboard {
             board,
             last: String::new(),
+            sent: None,
         })
     }
 
@@ -228,6 +232,7 @@ impl Clipboard {
             .set_text(text.to_string())
             .map_err(|e| format!("cannot write to the clipboard: {e}"))?;
         self.last = text.to_string();
+        self.sent = Some((name.to_string(), text.to_string()));
         // The bell tells the user the other side can paste now.
         print!("\x07");
         println!("  → {name} is on the clipboard: paste it into the other program.");
@@ -237,6 +242,11 @@ impl Clipboard {
 
     fn take(&mut self, name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         println!("  … waiting for {name}: copy it as text in the other program.");
+        if let Some((sent, _)) = &self.sent {
+            println!(
+                "    Copied something else in between? Press Enter here to copy {sent} again."
+            );
+        }
         let deadline = Instant::now() + session::TIMEOUT;
         let prefix = format!("ur:{}/", wire::UR_TYPE);
         loop {
@@ -259,12 +269,35 @@ impl Clipboard {
                     }
                 }
             }
+            if enter_pressed()
+                && let Some((sent, text)) = self.sent.clone()
+            {
+                self.put(&sent, &text)?;
+            }
             if Instant::now() > deadline {
                 return Err(format!("timed out waiting for {name}").into());
             }
             thread::sleep(session::POLL);
         }
     }
+}
+
+/// Whether Enter was pressed since the last call, without waiting: the keys
+/// typed while the clipboard is watched are read here, so none of them is left
+/// to answer the next question. False when there is no console to read.
+fn enter_pressed() -> bool {
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+    let mut pressed = false;
+    while matches!(event::poll(std::time::Duration::ZERO), Ok(true)) {
+        match event::read() {
+            Ok(Event::Key(key)) => {
+                pressed |= key.code == KeyCode::Enter && key.kind == KeyEventKind::Press;
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    pressed
 }
 
 #[cfg(feature = "camera")]
