@@ -127,6 +127,15 @@ PCZTs a dishonest coordinator could send, each refused or shown exactly as it
 will be signed, and mutation fuzzing of every decoder
 ([tests/fuzz.rs](tests/fuzz.rs)); CI runs both.
 
+### Shared tamper cases
+
+[vectors/tamper/](vectors/tamper/) holds tamper cases any co-signer can run:
+each is a refused PCZT, its accepted twin and what the user approved, with the
+refusal classes a signer may answer with ([classes.md](vectors/tamper/classes.md),
+format in spec § 8.2). The set is shared with other FROST signers for shielded
+ZEC (#7); new cases go to the listed maintainers privately first.
+[tests/tamper_vectors.rs](tests/tamper_vectors.rs) is this crate's runner.
+
 ## One vault, two implementations
 
 `interop dkg` creates a vault together with members running other software,
@@ -207,7 +216,8 @@ over the QR protocol's messages, mined on 2026-11-10:
 - A standalone crate on crates.io.
 - The backup's two profiles (a passphrase-encrypted file and a mnemonic), and
   a recovery flow that sweeps the funds to a new FROST account.
-- Specification v1.0, revised after review.
+- Specification v1.0, revised after review: in progress (two-message signing,
+  the setup acknowledgement and the shared tamper cases are in).
 - The member backup format as a ZIP, co-owned with aryaethn
   ([zcash/zips#1432](https://github.com/zcash/zips/pull/1432)).
 - Keep `qsk` split 2-of-3 across the devices instead of keeping `sk`, so that

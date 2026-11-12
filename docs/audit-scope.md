@@ -78,32 +78,33 @@ unit tests included:
 
 | File | Lines | Role |
 |---|---|---|
-| `src/channel.rs` | 638 | Pairing (X-Wing, committed six-digit code), direction keys, sealing |
-| `src/wire.rs` | 644 | CBOR messages, UR reader and its limits |
-| `src/setup.rs` | 683 | DKG over the pairing, `sk` by commit and reveal |
-| `src/cosigning.rs` | 491 | Signing session, co-signer review and approval |
-| `src/check.rs` | 504 | Signer checks on a PCZT, and what is shown |
+| `src/channel.rs` | 655 | Pairing (X-Wing, committed six-digit code), direction keys, sealing |
+| `src/wire.rs` | 679 | CBOR messages, UR reader and its limits |
+| `src/setup.rs` | 866 | DKG over the pairing, `sk` by commit and reveal, the acknowledgement |
+| `src/cosigning.rs` | 459 | Signing session, co-signer review and approval |
+| `src/check.rs` | 829 | Signer checks on a PCZT, and what is shown |
 | `src/signing.rs` | 123 | Re-randomized FROST shares, aggregation, verification |
-| `src/pczt_io.rs` | 138 | Sighash, spends to sign, signature insertion |
-| `src/keys.rs` | 241 | ZIP 2005 key derivation (`use_qsk`) |
+| `src/pczt_io.rs` | 145 | Sighash, spends to sign, signature insertion |
+| `src/keys.rs` | 246 | ZIP 2005 key derivation (`use_qsk`) |
 | `src/dkg.rs` | 84 | DKG wrapper over `reddsa` |
-| `src/backup.rs` | 570 | Member backup strings (zcash/zips#1432) |
+| `src/backup.rs` | 587 | Member backup strings (zcash/zips#1432) |
 
 The test co-signer, for its input handling only (invariant 5): `src/qrcli.rs`,
-`src/camera.rs`, `src/session.rs`, `src/qrview.rs` (about 1,080 lines).
+`src/camera.rs`, `src/session.rs`, `src/qrview.rs` (about 1,180 lines).
 
 **OpenPGP Wallet** (https://github.com/OpenPGP-Wallet/openpgp-wallet), `master`
 at the commit given with the audit request:
 
 | File | Lines | Role |
 |---|---|---|
-| `core/src/zcash_frost.rs` | 873 | FROST account: seat encryption, setup, PCZT creation, proving, broadcast |
-| `app/src-tauri/src/frost.rs` | 391 | Commands the web frontend calls, state between steps, native confirmations |
-| `app/src/main.js`, FROST section | about 370 | Screens; how backend text and SVG are displayed |
+| `core/src/zcash_frost.rs` | 1,310 | FROST account: seat encryption, setup, PCZT creation, proving, broadcast |
+| `app/src-tauri/src/frost.rs` | 538 | Commands the web frontend calls, state between steps, native confirmations |
+| `app/src/main.js`, FROST section | about 500 | Screens; how backend text and SVG are displayed |
 
-In total about 5,750 lines of protocol and wallet code and 1,080 lines of test
-co-signer input handling, plus about 1,550 lines of integration tests that show
-the intended behaviour.
+In total about 7,000 lines of protocol and wallet code and 1,180 lines of test
+co-signer input handling, plus about 2,570 lines of integration tests and the
+shared tamper cases of `vectors/tamper/`, which show the intended behaviour.
+(Counted on 2026-11-13; the audit request gives the counts at its commit.)
 
 ## 6. Out of scope
 
