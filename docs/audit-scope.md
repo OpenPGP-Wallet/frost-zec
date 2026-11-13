@@ -88,6 +88,7 @@ unit tests included:
 | `src/keys.rs` | 246 | ZIP 2005 key derivation (`use_qsk`) |
 | `src/dkg.rs` | 84 | DKG wrapper over `reddsa` |
 | `src/backup.rs` | 587 | Member backup strings (zcash/zips#1432) |
+| `src/profiles.rs` | 510 | Backup profiles: passphrase-encrypted file (Argon2id, XChaCha20-Poly1305), 51 words |
 
 The test co-signer, for its input handling only (invariant 5): `src/qrcli.rs`,
 `src/camera.rs`, `src/session.rs`, `src/qrview.rs` (about 1,180 lines).
@@ -101,7 +102,7 @@ at the commit given with the audit request:
 | `app/src-tauri/src/frost.rs` | 538 | Commands the web frontend calls, state between steps, native confirmations |
 | `app/src/main.js`, FROST section | about 500 | Screens; how backend text and SVG are displayed |
 
-In total about 7,000 lines of protocol and wallet code and 1,180 lines of test
+In total about 7,500 lines of protocol and wallet code and 1,180 lines of test
 co-signer input handling, plus about 2,570 lines of integration tests and the
 shared tamper cases of `vectors/tamper/`, which show the intended behaviour.
 (Counted on 2026-11-13; the audit request gives the counts at its commit.)

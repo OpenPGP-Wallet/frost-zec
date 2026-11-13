@@ -16,6 +16,8 @@ include = ["/src/**", "/tests/fixtures/**", "/docs/**", "/README.md", "/LICENSE"
 # encoding as before, so files from zcash-devtool still parse here and go back
 # to it unchanged.
 [dependencies]
+argon2 = "0.5"
+base64ct = { version = "1.6", features = ["alloc"] }
 bech32 = "0.11"
 blake2b_simd = "1.0.4"
 blake3 = "1"
@@ -33,6 +35,7 @@ rand10 = { package = "rand", version = "0.10", default-features = false, feature
 reddsa = { version = "=0.5.2", features = ["frost"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 ur = "0.5.2"
 x-wing = { version = "0.1.1", features = ["zeroize"] }
 zcash_address = "=0.14.0"
@@ -64,6 +67,13 @@ required-features = ["cli"]
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 pczt = { version = "=0.10.0", features = ["io-finalizer", "zcp-builder", "signer", "prover", "tx-extractor"] }
 rand = "0.8"
-sha2 = "0.10"
 zcash_primitives = { version = "=0.31.0", default-features = false, features = ["std", "non-standard-fees"] }
 zcash_protocol = "=0.11.0"
+
+# Argon2id at the cost a backup file requires (64 MiB, 3 passes) takes
+# seconds unoptimized: the tests build it optimized.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

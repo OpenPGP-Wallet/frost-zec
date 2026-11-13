@@ -50,6 +50,7 @@ pub mod dkg;
 pub mod interop;
 pub mod keys;
 pub mod pczt_io;
+pub mod profiles;
 pub mod session;
 pub mod setup;
 pub mod signing;

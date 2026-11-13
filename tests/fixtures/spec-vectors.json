@@ -68,5 +68,19 @@
     "network": 0,
     "t": 2,
     "ufvk": "uview1lxwjaj0hghk2x0430p94wrm5juw92wscgedhm962dyveac2umegdclkvv9vddd7dzu7ystghan83rkxy5mg8p2snyv4el7sfzrh53y9de0gufttala6er9fczvwn894p0njwxkvj00wxcmhj03c6hy8y63jmr0l6ff3dv66xkhzh6a65tsw7ypq8g2p06"
+  },
+  "profiles": {
+    "birthday": 3543405,
+    "file": "5a4b46524f53544201000001000300000001000000212121212121212121212121212121212222222222222222222222222222222222222222222222227f6f6eba2935b623648f161d6c24df7524d7b503b38d176ba58a13d75e4f275daf6d51cd65d3154d15e48465e78da94c46644e55bc86474176507d5ad5640386f831020714e11c2e0868900f907effdedc414c95cddcb9fde41a93411f5be3cb86fbe50f787bc9625880f2e173f6d91b5ec9c41f4fb0675c9501d6bf38bb212c8556943ba17ae65194c3990769e753b32ee470187f54ebbdf21afc8341862710f053e0d6a5b08e8244b021c206340da3dfcb8cfc92d792ce0684d84f4c64db50d7e7eb057e13caae8959b58fe0ea3fe9a4d06761cff1e28eaad274581ca3afd3a3a1c121abdccb75483b3c302c80784ec224a76594541ca80a92b1a02d46311639c665b959c66ac1a4dce601010de4d03f07d0918ee347c3aee94305ecd96c6a1a409fd021cce9f781ab7a1a097357ca7d26d8e01fb303d002eaf1ea5938ae29993209a22bca9837509ce4dce2270969c74f111d7c73fc3d76734a74b6ac52845af58d65499ea66f87",
+    "label": "FROST 2-of-3",
+    "m_cost_kib": 65536,
+    "nonce": "222222222222222222222222222222222222222222222222",
+    "p_cost": 1,
+    "passphrase": "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+    "salt": "21212121212121212121212121212121",
+    "string": "zkfrost1qypsyqamqtf6vj48qzvmg4y6w45xz3hvu4xwe3x9jjr2um0lzk3ttu59q6683wrs9swj26072tja0kada33z8ngsl494qndt43ll7garwd3az3v7d94",
+    "t_cost": 3,
+    "ufvk": "uview1lvfs3zfudj3pl6axj09t7wc0g8vgf7f98rcrmyqgtgjvxrgehte7802uptc9xt37hrauudeazeveywkd98x5ewputn0uyzadx7x3sm8nkccnraqpfvefwguwesq8s6e0hruprvkax5lw73rv2eznycd2hq3a9glq95p54ahytt8t60hm52pt6pc0czxg4",
+    "words": "absurd blossom liberty invite coffee spring clever theme often pencil charge turn maid pet receive praise under change gown ask traffic zebra final find verb choice public vapor mandate bid innocent pudding wrestle now invest resemble tell country monkey pear wool fold beach firm side zebra model hover glow mesh neglect"
   }
 }

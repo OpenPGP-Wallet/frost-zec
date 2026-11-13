@@ -435,8 +435,49 @@ the group's public key package can confirm. Implemented in `src/backup.rs`; the
 ZIP's test vectors pass with this crate and with Zkool's own code.
 
 Because the string holds `sk`, it is never stored or sent under public-key
-encryption that relies on discrete logarithms. Milestone 2 adds two profiles
-for keeping it: a passphrase-encrypted file and a mnemonic.
+encryption that relies on discrete logarithms. A user keeps it in one of two
+profiles, implemented in `src/profiles.rs`; the reasons for each choice are in
+`docs/backup-profiles.md`.
+
+**Profile 1, a passphrase-encrypted file**, for users who keep files:
+
+    magic "ZKFROSTB" (8) || version (1) = 1 || LE32(m_cost_kib) || LE32(t_cost)
+        || LE32(p_cost) || salt (16) || nonce (24) || ciphertext
+
+The key is Argon2id (version 0x13) of the passphrase and the salt, 32 bytes,
+with the costs of the header; the ciphertext is XChaCha20-Poly1305 under that
+key and the nonce, with the whole header as associated data, so a changed cost
+or salt fails decryption. Files are written with 64 MiB, 3 passes and 1 lane.
+A reader MUST refuse lower costs, so that a forged file cannot pass for a
+strong one, and SHOULD refuse more than 1 GiB, 16 passes or 16 lanes, so that a
+file cannot exhaust the device; it checks the costs before any work. The
+plaintext is a CBOR map:
+
+| Key | Field | |
+|---|---|---|
+| 1 | the member backup string | required |
+| 2 | the group's unified full viewing key | required: a restore needs nothing from another device |
+| 3 | the birthday height | when known; otherwise a restore scans from Ironwood's activation |
+| 4 | a label | optional |
+
+A writer MUST check, before writing, that the string restores against the
+viewing key, and a reader MUST check it after decrypting. The file never holds
+nonces or pairing keys: a restored member pairs anew (§ 3.3). Its text form,
+for password managers, is `zkfrost-file-1:` and the bytes in unpadded
+base64url. The passphrase SHOULD have at least 12 words; the reference wallet
+and the test co-signer generate 12 random words of the BIP-39 English list.
+
+**Profile 2, 51 words**, for users who want paper: the 68-byte payload and the
+first 17 bits of its SHA-256, 561 bits written as 51 words of the BIP-39
+English list, 11 bits a word, most significant bit first, as BIP-39 does for
+any length that is a multiple of 32 bits. No wallet takes 51 words as a seed,
+so the backup cannot be mistaken for one. The words carry only the member:
+restoring also needs the group's viewing key, from the co-signer during
+recovery (§ 7.2) or from a profile 1 file. With the viewing key, a single
+miscopied word is found by trying every word at every position: a candidate
+must pass the checksum and restore against the viewing key. A word miscopied
+in the signing share is found by the checksum alone, so more than one candidate
+can remain; the group's public key package then tells them apart.
 
 ### 7.2 Recovery *(Milestone 2, draft)*
 
@@ -505,7 +546,9 @@ for:
   group key `ak`; the commitments, `T`, `sk`, and the resulting unified full
   viewing key and Mainnet address;
 - the acknowledgement (§ 4.1): that group key and viewing key with three fixed
-  verifying shares; the digest `D`.
+  verifying shares; the digest `D`;
+- the backup profiles (§ 7.1): a member of the backup ZIP's test vectors with
+  its viewing key, a passphrase, salt and nonce; the file, and the 51 words.
 
 `tests/vectors.rs` recomputes every output from the formulas in this document,
 calling BLAKE2b, X-Wing and XChaCha20-Poly1305 directly, and checks that the
@@ -601,3 +644,4 @@ Reviewed by Daniel Gorgonha (DeegaLabs) on the forum thread of grant #490.
 - The shared tamper-case format and the first cases (§ 8.2), agreed in
   frost-zec#7 with the Konclave and PREDGE maintainers.
 - Amounts are shown in the unit of the group's network: TAZ on testnet.
+- The two backup profiles, a passphrase-encrypted file and 51 words (§ 7.1).

@@ -1,7 +1,9 @@
 # Keeping a member backup: two profiles, and the formats they compare to
 
-Draft for Milestone 2 of ZCG grant #490. Not implemented yet: the choices
-below are proposals.
+Milestone 2 of ZCG grant #490. Implemented in `src/profiles.rs`, specified in
+[spec.md](spec.md) § 7.1, with test vectors; the test co-signer has
+`frost-zec backup protect | open | words | from-words`. This document gives the
+reasons for each choice.
 
 A member backup string ([backup-format.md](backup-format.md),
 [zcash/zips#1432](https://github.com/zcash/zips/pull/1432)) holds a member's
@@ -36,13 +38,14 @@ carries the same file for password managers.
 |---|---|---|
 | 1 | member backup string | required |
 | 2 | the group's unified full viewing key | so that a restore needs nothing from another device |
-| 3 | birthday height | where to start scanning |
+| 3 | birthday height | where to start scanning, when known |
 | 4 | label | the account's name in the wallet |
 
 Never nonces, and never pairing keys: a restored member pairs anew.
 
 **Passphrase.** At least 12 words, or one a strength estimator rates
-"very strong"; the wallet offers a generated passphrase of 12 random words.
+"very strong"; `backup protect` generates 12 random words of the BIP-39
+English list (132 bits) and shows them once.
 
 ## Profile 2: a mnemonic
 
@@ -56,10 +59,15 @@ key, which the payload does not hold: from the co-signer during recovery, or
 from a copy printed next to the words. A viewing key is not a spending key,
 but it reveals the account's history, so it stays as private as the words.
 
-Open: whether to write the Bech32m string itself instead (about 120
-characters, shorter but easier to miscopy), and whether to add the words of a
-recovery check, as SLIP-39 and codex32 do, so that a single wrong word can be
-located.
+Words rather than the Bech32m string itself: the string is shorter (about 120
+characters) but each character is easy to miscopy by hand, while each word is
+checked against the list as it is typed. No extra check words, as SLIP-39 and
+codex32 add: with the group's viewing key, which a restore needs anyway, a
+single miscopied word is found by trying every word at every position (about
+100,000 candidates, under a second). A candidate must pass the 17-bit checksum
+and restore against the viewing key; a word miscopied in the signing share is
+caught by the checksum alone, so two candidates can remain, which the group's
+public key package tells apart.
 
 ## Existing formats
 

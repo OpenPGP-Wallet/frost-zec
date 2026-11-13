@@ -16,7 +16,7 @@ use frost_zec::channel::{Initiator, Responder};
 use frost_zec::cosigning::{self, CoordinatorSession, Member, Reply, Request};
 use frost_zec::setup::{CoordinatorSetup, CosignerSetup, Done, Round1, Round2};
 use frost_zec::wire::{self, Message, Reader, kind};
-use frost_zec::{backup, check, dkg, keys, pczt_io, signing};
+use frost_zec::{backup, check, dkg, keys, pczt_io, profiles, signing};
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
@@ -140,6 +140,28 @@ fn every_decoder_survives_mutated_input() {
         .unwrap()
         .encode()
         .unwrap();
+    let backup_words =
+        profiles::to_words(&backup::Backup::decode(&backup_text).unwrap()).to_string();
+    let backup_file = {
+        let ak = signing::group_ak(&members[0].public_key_package).unwrap();
+        let sk: [u8; 32] = rand::random();
+        let fvk = keys::derive(&sk, &ak).unwrap().fvk;
+        let member = backup::Backup::new(&members[0].key_package, 3, &sk)
+            .unwrap()
+            .encode()
+            .unwrap();
+        profiles::encrypt(
+            &profiles::Contents {
+                backup: zeroize::Zeroizing::new(member),
+                ufvk: keys::ufvk(&fvk, NetworkType::Main).unwrap(),
+                birthday: None,
+                label: None,
+            },
+            "fuzz passphrase",
+        )
+        .unwrap()
+    };
+    let backup_file_text = profiles::to_text(&backup_file);
     let request_bytes = request.to_bytes().unwrap();
     let ur_parts: Vec<String> = {
         let mut encoder = wire::encoder(&request_bytes, 100).unwrap();
@@ -252,9 +274,18 @@ fn every_decoder_survives_mutated_input() {
                     let _ = pczt_io::spends_to_sign(&pczt);
                 }
             }
+            // A member backup, and its profiles: words, a file's text form
+            // and header (decrypting would cost an Argon2 run per input).
             7 => {
                 let text = mutate(backup_text.as_bytes(), &mut local);
                 let _ = backup::Backup::decode(&String::from_utf8_lossy(&text));
+                let words = mutate(backup_words.as_bytes(), &mut local);
+                let _ = profiles::from_words(&String::from_utf8_lossy(&words));
+                let file_text = mutate(backup_file_text.as_bytes(), &mut local);
+                if let Ok(file) = profiles::from_text(&String::from_utf8_lossy(&file_text)) {
+                    let _ = profiles::file_cost(&file);
+                }
+                let _ = profiles::file_cost(&mutate(&backup_file, &mut local));
             }
             // A QR stream with some parts mutated.
             _ => {

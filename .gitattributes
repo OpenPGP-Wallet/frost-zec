@@ -1,1 +1,2 @@
 *.pczt binary
+src/bip39-english.txt text eol=lf

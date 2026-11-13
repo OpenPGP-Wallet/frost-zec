@@ -175,6 +175,18 @@ Zkool's code. Both pass the same test vectors
 which [tools/zip-vectors](tools/zip-vectors) generates and checks against
 Zkool's own decoder and derivation matcher, copied unchanged.
 
+A string is kept in one of two profiles ([docs/backup-profiles.md](docs/backup-profiles.md),
+spec § 7.1): a file encrypted under a passphrase of 12 random words (Argon2id
+and XChaCha20-Poly1305, with the group's viewing key and birthday so a restore
+needs nothing else), or 51 words on paper:
+
+```bash
+cargo run -- backup protect --in member-3.txt --ufvk <viewing key> --birthday <height> --out member-3.zkfrost
+cargo run -- backup open --in member-3.zkfrost --out member-3.txt
+cargo run -- backup words --in member-3.txt          # 51 words to write down
+cargo run -- backup from-words --in words.txt --ufvk <viewing key> --out member-3.txt
+```
+
 ## Testnet and NU7
 
 Public testnet activated NU7 at height 4,465,026 (Zebra 7.0.0-rc.0) before
@@ -214,8 +226,8 @@ over the QR protocol's messages, mined on 2026-11-10:
 ## Next steps
 
 - A standalone crate on crates.io.
-- The backup's two profiles (a passphrase-encrypted file and a mnemonic), and
-  a recovery flow that sweeps the funds to a new FROST account.
+- A recovery flow that sweeps the funds to a new FROST account (the backup's
+  two profiles, a passphrase-encrypted file and 51 words, are in).
 - Specification v1.0, revised after review: in progress (two-message signing,
   the setup acknowledgement and the shared tamper cases are in).
 - The member backup format as a ZIP, co-owned with aryaethn
