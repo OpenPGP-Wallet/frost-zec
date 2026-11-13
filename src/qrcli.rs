@@ -3,7 +3,7 @@
 //!
 //!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR|qr|clipboard] [--yes]
 //!            [--backup-plain]   (co-signer: member 3 as a bare string, not an encrypted file)
-//!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--yes]
+//!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--policy FILE] [--yes]
 //!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR|qr|clipboard]
 //!   qr done [--state DIR] [--via DIR|qr|clipboard]
 //!   qr recover --as cosigner --state NEW --old-state OLD [--via DIR|qr|clipboard] [--yes]
@@ -23,7 +23,8 @@
 //! payloads.
 //!
 //! `--yes` skips the human checks (the pairing code and the approval of a
-//! payment): tests only.
+//! payment): tests only. `--policy FILE` refuses a payment that breaks the
+//! file's rules before the user is asked (docs/policy.md).
 //!
 //! The seat in `--state` holds the member's share, `sk` and the pairing keys,
 //! unencrypted like the rest of this prototype. Test amounts only.
@@ -41,7 +42,7 @@ use frost_zec::setup::{
     self as dkg_setup, CoordinatorSetup, CosignerSetup, Done, Group, Round1, Round2,
 };
 use frost_zec::wire::{self, Message, kind};
-use frost_zec::{check, interop, keys, pczt_io, profiles, recovery, session, signing};
+use frost_zec::{check, interop, keys, pczt_io, policy, profiles, recovery, session, signing};
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
 use reddsa::frost::redpallas::keys::{KeyPackage, PublicKeyPackage};
@@ -865,6 +866,10 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut rng = rng();
     match role {
         "cosigner" => {
+            // Loaded before the session opens, so a bad policy file stops here.
+            let policy = option(args, "--policy")
+                .map(policy::Policy::load)
+                .transpose()?;
             println!("[co-signer] signing session");
             let messages = carrier.receive(SIGN_REQUEST)?;
             one(&messages, 1)?;
@@ -883,7 +888,14 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
                         if let Some(new_account) = &seat.sweep_to {
                             print_sweep_check(pending.report(), new_account, member.network);
                         }
-                        if ask("  Approve and sign?", flag(args, "--yes"))? {
+                        // A standing policy only narrows: a payment it refuses
+                        // is never offered to the user.
+                        let verdict = policy
+                            .as_ref()
+                            .map(|policy| policy.check(pending.report(), member.network));
+                        if let Some(Err(reason)) = verdict {
+                            pending.refuse(reason)
+                        } else if ask("  Approve and sign?", flag(args, "--yes"))? {
                             pending.approve()
                         } else {
                             pending.decline()

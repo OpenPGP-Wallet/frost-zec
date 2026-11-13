@@ -46,6 +46,26 @@ fn wait(children: Vec<Child>) {
     }
 }
 
+/// Waits for each process, at most a minute, and returns whether it succeeded.
+fn outcomes(children: Vec<Child>) -> Vec<bool> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    children
+        .into_iter()
+        .map(|mut child| {
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status.success();
+                }
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    panic!("a frost-zec process hung");
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .collect()
+}
+
 fn seat_field(dir: &Path, field: &str) -> String {
     let seat: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("seat.json")).unwrap()).unwrap();
@@ -146,6 +166,56 @@ fn two_processes_pair_generate_keys_and_sign() {
         pczt_io::spends_to_sign(&signed).is_err(),
         "every spend is signed"
     );
+
+    // With a standing policy the payment breaks, the co-signer refuses without
+    // asking: it sends the refusal and succeeds, the coordinator gets no
+    // signature.
+    let policy = root.join("policy.json");
+    std::fs::write(&policy, r#"{"network": "main", "per_payment_cap_zat": 1}"#).unwrap();
+    let refused = root.join("refused.pczt");
+    let said = root.join("coordinator-stderr.txt");
+    let finished = outcomes(vec![
+        frost_zec(&[
+            "qr",
+            "sign",
+            "--as",
+            "cosigner",
+            "--state",
+            s,
+            "--via",
+            via,
+            "--policy",
+            policy.to_str().unwrap(),
+        ]),
+        Command::new(env!("CARGO_BIN_EXE_frost-zec"))
+            .args([
+                "qr",
+                "sign",
+                "--as",
+                "coordinator",
+                "--state",
+                c,
+                "--via",
+                via,
+                "--pczt",
+                input.to_str().unwrap(),
+                "--out",
+                refused.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&said).unwrap())
+            .spawn()
+            .unwrap(),
+    ]);
+    assert_eq!(
+        finished,
+        vec![true, false],
+        "co-signer refuses, coordinator fails"
+    );
+    assert!(!refused.exists(), "no signed PCZT after a refusal");
+    // Refused by the policy, not declined at a prompt nobody answered.
+    let said = std::fs::read_to_string(&said).unwrap();
+    assert!(said.contains("policy"), "{said}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
