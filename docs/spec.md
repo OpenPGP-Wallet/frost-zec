@@ -54,7 +54,7 @@ every message is sealed (§ 3.4) and its body is
 | 34 | dkg-done | sealed |
 | 51 | sign-request | sealed |
 | 52 | sign-reply | sealed |
-| 64 | group-info | sealed (recovery, § 7.2, draft) |
+| 64 | group-info | sealed (recovery, § 7.2) |
 
 Kinds 48 to 50 were the three signing messages of v0.1 and MUST NOT be reused:
 the kind is bound to every sealed message, so a v0.1 device and a v1.0 device
@@ -479,55 +479,64 @@ must pass the checksum and restore against the viewing key. A word miscopied
 in the signing share is found by the checksum alone, so more than one candidate
 can remain; the group's public key package then tells them apart.
 
-### 7.2 Recovery *(Milestone 2, draft)*
+### 7.2 Recovery
 
-Losing one member never loses the funds: the two others move them to a fresh
-account. An account is never repaired in place. After a loss, the remaining
-members create a new 2-of-3 account (§ 4) and sweep every note of the old one
-to it, so whatever the lost device held (its share, `sk`, the pairing keys)
-can no longer spend; it still reveals the old account's history.
+Implemented in `src/recovery.rs`; the test co-signer runs it with
+`qr recover` and `qr sign-local`. Losing one member never loses the funds: the
+two others move them to a fresh account. An account is never repaired in
+place. After a loss, the remaining members create a new 2-of-3 account (§ 4)
+and sweep every note of the old one to it, so that whatever the lost device
+held (its share, `sk`, the pairing keys) can no longer spend; it still reveals
+the old account's history.
 
 | Lost | Signers of the sweep | How |
 |---|---|---|
-| Coordinator (1) | co-signer (2) and backup (3) | a new coordinator restores member 3 and pairs with the co-signer |
+| Coordinator (1) | backup (3) and co-signer (2) | a new coordinator restores member 3 and pairs with the co-signer |
 | Co-signer (2) | coordinator (1) and backup (3) | the coordinator restores member 3 and signs with both; a new co-signer joins the new account |
 | Backup (3) | coordinator (1) and co-signer (2) | an ordinary session (§ 5), to a new account with a new backup |
 
-When the coordinator is lost:
+**When the coordinator is lost**, the new coordinator and the co-signer run the
+exchange of § 4, with one addition: the co-signer's keys message (step 4)
+starts with **group-info** (kind 64), sealed under the new pairing:
 
-1. A new coordinator pairs with the co-signer (§ 3), and the user compares the
-   code as for a first pairing. The co-signer attaches the new pairing to its
-   existing member and forgets the old one, so the lost device can no longer
-   talk to it.
-2. The co-signer sends the old group's public key package and unified full
-   viewing key, sealed under a new kind, `group-info` (64). The new
-   coordinator restores member 3 from its backup string (§ 7.1) and checks it
-   against them: `sk` and the group key must give that viewing key, and
-   member 3's verifying share must be the package's.
-3. The two devices create the new account (§ 4), over the pairing of step 1.
-4. The new coordinator scans the old account with its viewing key, from the
-   account's birthday when known and otherwise from the Ironwood activation
-   height, and builds a PCZT that pays every spendable note, less the fee, to
-   the new account's address. A sweep with more notes than one session signs
-   (four, § 5) takes several transactions.
-5. The co-signer checks each PCZT as any other (§ 6). When the recipient is
-   the new account, whose address it computed itself in step 3, it says so,
-   so the user approves a transfer to their new account rather than to an
-   address they would have to read.
-6. Once the sweep is mined, the new coordinator deletes the restored member 3.
+    {1: the old group's public key package (frost-core serialization),
+     2: the old group's unified full viewing key}
 
-When the co-signer is lost, the coordinator restores member 3 the same way,
-checked against the public key package it already holds, creates the new
-account with a new co-signer, and signs the sweep with members 1 and 3 itself.
-Until the sweep is mined that one device holds two members, so the sweep
-should be done in one sitting.
+The new coordinator MUST restore member 3 from its backup and check it against
+group-info before it sends its own round 2:
 
-The checks of step 2 do not stop a lying co-signer: it holds `sk`, so it can
-make a package and a viewing key that agree with the backup string but belong
-to no funded account. Nothing is lost then (the sweep finds no notes and the
-old account is untouched), but the recovery stalls. A backup kit that also
-carries the account's viewing key and birthday height would make step 2
-independent of the co-signer; whether the kit should carry them is open.
+- when the backup is a profile 1 file (§ 7.1), its viewing key MUST equal the
+  one in group-info, so the co-signer cannot pass another group off as the old
+  one;
+- `sk` and the group key MUST give that viewing key;
+- the member MUST be member 3, and its share, threshold and group size MUST
+  match the public key package.
+
+From a bare backup string, which holds no viewing key, the last two checks do
+not stop a lying co-signer: it holds `sk`, so it can describe a package and a
+viewing key that agree with the string but belong to no funded account.
+Nothing is lost then (the sweep finds no notes and the old account is
+untouched), but the recovery stalls. Profile 1 removes that case.
+
+Once the new account is acknowledged (§ 4.1):
+
+- the co-signer gives its member of the old account the new pairing and MUST
+  erase the old one, so the lost device can no longer talk to it;
+- the new coordinator scans the old account with its viewing key, from the
+  birthday when known and otherwise from the Ironwood activation height, and
+  builds PCZTs that pay every spendable note, less the fee, to the new
+  account's address; a sweep with more notes than one session signs (four,
+  § 5) takes several transactions;
+- each sweep is an ordinary signing session (§ 5) between the restored member
+  3 and the co-signer's member 2, and the co-signer checks it as any other
+  (§ 6);
+- once the sweep is mined, the new coordinator deletes the restored member 3.
+
+**When the co-signer is lost**, the coordinator restores member 3 the same
+way, checked against the public key package and viewing key it already holds,
+creates the new account with a new co-signer, and signs the sweep with members
+1 and 3 itself, after the checks of § 6. Until the sweep is mined that one
+device holds two members, so the sweep should be done in one sitting.
 
 ## 8. Test vectors
 
@@ -645,3 +654,4 @@ Reviewed by Daniel Gorgonha (DeegaLabs) on the forum thread of grant #490.
   frost-zec#7 with the Konclave and PREDGE maintainers.
 - Amounts are shown in the unit of the group's network: TAZ on testnet.
 - The two backup profiles, a passphrase-encrypted file and 51 words (§ 7.1).
+- Recovery after a lost device, by sweeping to a new account (§ 7.2).

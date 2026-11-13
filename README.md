@@ -226,8 +226,10 @@ over the QR protocol's messages, mined on 2026-11-10:
 ## Next steps
 
 - A standalone crate on crates.io.
-- A recovery flow that sweeps the funds to a new FROST account (the backup's
-  two profiles, a passphrase-encrypted file and 51 words, are in).
+- Recovery in OpenPGP Wallet's screens. The protocol and the test co-signer
+  have it: `qr recover` after a lost coordinator, `qr sign-local` after a lost
+  co-signer, both sweeping the funds to a new account (spec § 7.2); and the
+  backup's two profiles, a passphrase-encrypted file and 51 words.
 - Specification v1.0, revised after review: in progress (two-message signing,
   the setup acknowledgement and the shared tamper cases are in).
 - The member backup format as a ZIP, co-owned with aryaethn

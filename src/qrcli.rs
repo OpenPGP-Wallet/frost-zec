@@ -5,6 +5,11 @@
 //!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--yes]
 //!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR|qr|clipboard]
 //!   qr done [--state DIR] [--via DIR|qr|clipboard]
+//!   qr recover --as cosigner --state NEW --old-state OLD [--via DIR|qr|clipboard] [--yes]
+//!   qr recover --as coordinator --state NEW --old-state OLD --backup FILE
+//!              [--passphrase-file FILE] [--network main|test] [--via DIR|qr|clipboard] [--yes]
+//!   qr sign-local --state DIR --backup FILE [--passphrase-file FILE] --pczt IN --out OUT [--yes]
+//!              the co-signer is lost: sign the sweep with this member and member 3
 //!   qr info [--state DIR]
 //!
 //! With `--via qr`, every message is shown as an animated QR code and the
@@ -35,7 +40,7 @@ use frost_zec::setup::{
     self as dkg_setup, CoordinatorSetup, CosignerSetup, Done, Group, Round1, Round2,
 };
 use frost_zec::wire::{self, Message, kind};
-use frost_zec::{interop, keys, pczt_io, session, signing};
+use frost_zec::{interop, keys, pczt_io, profiles, recovery, session, signing};
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
 use reddsa::frost::redpallas::keys::{KeyPackage, PublicKeyPackage};
@@ -65,8 +70,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         Some("sign") => sign(&args[1..]),
         Some("info") => info(&args[1..]),
         Some("done") => done(&args[1..]),
+        Some("recover") => recover(&args[1..]),
+        Some("sign-local") => sign_local(&args[1..]),
         _ => Err(
-            "usage: frost-zec qr <setup | sign | done | info> [options] (see src/qrcli.rs)".into(),
+            "usage: frost-zec qr <setup | sign | done | recover | sign-local | info> [options] (see src/qrcli.rs)"
+                .into(),
         ),
     }
 }
@@ -127,6 +135,15 @@ impl Seat {
             .into());
         }
         fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        Ok(())
+    }
+
+    /// Writes the seat over the one in `dir`, through a temporary file.
+    fn replace(&self, dir: &Path) -> Result<(), Box<dyn Error>> {
+        let path = dir.join(SEAT_FILE);
+        let temporary = dir.join(".seat.json.tmp");
+        fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
+        fs::rename(&temporary, &path)?;
         Ok(())
     }
 
@@ -405,8 +422,131 @@ fn one(messages: &[Message], count: usize) -> Result<(), Box<dyn Error>> {
 }
 
 fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
+    setup_flow(args, None)
+}
+
+/// What `qr recover` adds to a setup (spec § 7.2).
+enum Recovery {
+    /// The co-signer: its seat of the old group, which takes the new pairing.
+    Cosigner { old_state: PathBuf, old: Seat },
+    /// The new coordinator: member 3's backup string, and the viewing key of
+    /// the backup kit when it is a profile 1 file.
+    Coordinator {
+        old_state: PathBuf,
+        backup: zeroize::Zeroizing<String>,
+        kit_ufvk: Option<String>,
+    },
+}
+
+/// The passphrase of a backup file: from --passphrase-file, or typed (it is
+/// shown as it is typed).
+fn read_passphrase(args: &[String]) -> Result<zeroize::Zeroizing<String>, Box<dyn Error>> {
+    if let Some(file) = option(args, "--passphrase-file") {
+        return Ok(zeroize::Zeroizing::new(
+            fs::read_to_string(file)?.trim().to_string(),
+        ));
+    }
+    print!("  passphrase of the backup file (shown as you type): ");
+    io::stdout().flush()?;
+    let mut line = zeroize::Zeroizing::new(String::new());
+    io::stdin().lock().read_line(&mut line)?;
+    Ok(zeroize::Zeroizing::new(line.trim().to_string()))
+}
+
+/// After a lost device: pairs anew, the co-signer describes the old group, the
+/// new coordinator restores member 3 against it, and the two create a new
+/// account. The old account is then swept with `qr sign`: the coordinator
+/// with the restored member 3 in --old-state, the co-signer with its old seat,
+/// which now holds the new pairing.
+fn recover(args: &[String]) -> Result<(), Box<dyn Error>> {
     let role = option(args, "--as").ok_or("--as coordinator|cosigner is required")?;
-    let network_name = option(args, "--network").unwrap_or("test");
+    let old_state = PathBuf::from(
+        option(args, "--old-state").ok_or("--old-state DIR is required (the old account)")?,
+    );
+    let recovery = match role {
+        "cosigner" => {
+            let old = Seat::load(&old_state)?;
+            if old.role != "cosigner" {
+                return Err(format!("{} is not a co-signer's seat", old_state.display()).into());
+            }
+            Recovery::Cosigner { old_state, old }
+        }
+        "coordinator" => {
+            if old_state.join(SEAT_FILE).exists() {
+                return Err(format!(
+                    "{} already holds a seat: give --old-state a new folder for the restored member 3",
+                    old_state.display()
+                )
+                .into());
+            }
+            let (backup, kit_ufvk) = read_backup(args)?;
+            Recovery::Coordinator {
+                old_state,
+                backup,
+                kit_ufvk,
+            }
+        }
+        _ => return Err("--as must be coordinator or cosigner".into()),
+    };
+    setup_flow(args, Some(recovery))
+}
+
+/// Member 3's backup string from --backup: the string itself, or a backup
+/// file (profile 1), whose viewing key comes with it.
+fn read_backup(
+    args: &[String],
+) -> Result<(zeroize::Zeroizing<String>, Option<String>), Box<dyn Error>> {
+    let path = option(args, "--backup")
+        .ok_or("--backup FILE is required (member 3: its string, or a backup file)")?;
+    let bytes = fs::read(path)?;
+    if bytes.starts_with(b"zkfrost1") {
+        let text = String::from_utf8(bytes)?;
+        return Ok((zeroize::Zeroizing::new(text.trim().to_string()), None));
+    }
+    let file = if bytes.starts_with(profiles::TEXT_PREFIX.as_bytes()) {
+        profiles::from_text(std::str::from_utf8(&bytes)?)?
+    } else {
+        bytes
+    };
+    profiles::file_cost(&file)?;
+    let contents = profiles::decrypt(&file, &read_passphrase(args)?)?;
+    let ufvk = contents.ufvk.clone();
+    Ok((contents.backup.clone(), Some(ufvk)))
+}
+
+/// The co-signer is lost (spec § 7.2): this coordinator restores member 3,
+/// checked against the group in its own seat, and signs the sweep with both.
+fn sign_local(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let seat = Seat::load(&state_dir(args))?;
+    let mine = seat.member()?;
+    let (backup, kit_ufvk) = read_backup(args)?;
+    let restored = recovery::restore_member(
+        &backup,
+        &recovery::GroupInfo::new(&mine, &seat.ufvk),
+        kit_ufvk.as_deref(),
+    )?;
+    let input = option(args, "--pczt").ok_or("--pczt IN is required")?;
+    let output = option(args, "--out").ok_or("--out OUT is required")?;
+    let (signed, report) =
+        recovery::sign_with_two_members(&fs::read(input)?, &mine, &restored.member)?;
+    print_report("this device, members 1 and 3", &report);
+    if !ask("  Sign this with both members?", flag(args, "--yes"))? {
+        return Err("not signed".into());
+    }
+    fs::write(output, pczt_io::serialize(signed)?)?;
+    println!("  signed, every signature verified under its rk: written to {output}");
+    println!("  Once it is mined, delete member 3 from this device.");
+    Ok(())
+}
+
+fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn Error>> {
+    let role = option(args, "--as").ok_or("--as coordinator|cosigner is required")?;
+    // A co-signer recovering keeps the old account's network.
+    let network_name = match &recovery {
+        Some(Recovery::Cosigner { old, .. }) => old.network.clone(),
+        _ => option(args, "--network").unwrap_or("test").to_string(),
+    };
+    let network_name = network_name.as_str();
     let network = interop::network_type(network_name)?;
     let state = state_dir(args);
     if state.join(SEAT_FILE).exists() {
@@ -447,9 +587,37 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
             let pairing = pending.confirm();
             let messages = carrier.receive(COSIGNER_KEYS)?;
-            one(&messages, 2)?;
-            let (_, theirs1) = messages[0].open(&pairing, kind::DKG_ROUND1)?;
-            let (_, theirs2) = messages[1].open(&pairing, kind::DKG_ROUND2)?;
+            let restored = match &recovery {
+                Some(Recovery::Coordinator {
+                    backup, kit_ufvk, ..
+                }) => {
+                    one(&messages, 3)?;
+                    let (_, info) = messages[0].open(&pairing, kind::GROUP_INFO)?;
+                    // Checked before this device sends anything secret.
+                    let restored = recovery::restore_member(
+                        backup,
+                        &recovery::GroupInfo::from_bytes(&info)?,
+                        kit_ufvk.as_deref(),
+                    )?;
+                    if restored.member.network != network {
+                        return Err(
+                            "the old account is on another network: use its --network".into()
+                        );
+                    }
+                    println!(
+                        "  member 3 restored and checked: old account {}",
+                        restored.address
+                    );
+                    Some(restored)
+                }
+                _ => {
+                    one(&messages, 2)?;
+                    None
+                }
+            };
+            let keys_at = messages.len() - 2;
+            let (_, theirs1) = messages[keys_at].open(&pairing, kind::DKG_ROUND1)?;
+            let (_, theirs2) = messages[keys_at + 1].open(&pairing, kind::DKG_ROUND2)?;
             let (round2, group) = coordinator_setup.finish(
                 &Round1::from_bytes(&theirs1)?,
                 &Round2::from_bytes(&theirs2)?,
@@ -473,6 +641,18 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             let seat = Seat::new("coordinator", network_name, &pairing, &group)?;
             seat.save(&state)?;
             print_seat(&seat);
+            if let (Some(restored), Some(Recovery::Coordinator { old_state, .. })) =
+                (restored, &recovery)
+            {
+                let old = Seat::new("coordinator", network_name, &pairing, &restored)?;
+                old.save(old_state)?;
+                println!(
+                    "  the old account's member 3, restored, is in {}: sweep the old account to \
+                     the new address with `qr sign --as coordinator --state {}`",
+                    old_state.display(),
+                    old_state.display()
+                );
+            }
         }
         "cosigner" => {
             println!("[co-signer] pairing and key generation, network {network_name}");
@@ -491,24 +671,39 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
             let (_, theirs1) = messages[1].open(&pairing, kind::DKG_ROUND1)?;
             let (cosigner_setup, round1, round2) =
                 CosignerSetup::respond(network, &Round1::from_bytes(&theirs1)?)?;
+            let mut keys_messages = Vec::new();
+            if let Some(Recovery::Cosigner { old, .. }) = &recovery {
+                let info = recovery::GroupInfo::new(&old.member()?, &old.ufvk);
+                keys_messages.push(Message::seal(
+                    &pairing,
+                    kind::GROUP_INFO,
+                    DKG_SESSION,
+                    &info.to_bytes()?,
+                    &mut rng,
+                )?);
+            }
             carrier.send(
                 COSIGNER_KEYS,
                 &[
-                    Message::seal(
-                        &pairing,
-                        kind::DKG_ROUND1,
-                        DKG_SESSION,
-                        &round1.to_bytes(),
-                        &mut rng,
-                    )?,
-                    Message::seal(
-                        &pairing,
-                        kind::DKG_ROUND2,
-                        DKG_SESSION,
-                        &round2.to_bytes(),
-                        &mut rng,
-                    )?,
-                ],
+                    keys_messages,
+                    vec![
+                        Message::seal(
+                            &pairing,
+                            kind::DKG_ROUND1,
+                            DKG_SESSION,
+                            &round1.to_bytes(),
+                            &mut rng,
+                        )?,
+                        Message::seal(
+                            &pairing,
+                            kind::DKG_ROUND2,
+                            DKG_SESSION,
+                            &round2.to_bytes(),
+                            &mut rng,
+                        )?,
+                    ],
+                ]
+                .concat(),
             )?;
             let messages = carrier.receive(COORDINATOR_KEYS)?;
             one(&messages, 1)?;
@@ -545,6 +740,18 @@ fn setup(args: &[String]) -> Result<(), Box<dyn Error>> {
                  delete it here. It holds a share and sk, protect it like the seat.",
                 backup_path.display()
             );
+            if let Some(Recovery::Cosigner { old_state, mut old }) = recovery {
+                // The old account now answers the new coordinator only: the
+                // lost device's pairing is forgotten.
+                old.pairing = hex::encode(pairing.to_bytes());
+                old.replace(&old_state)?;
+                println!(
+                    "  the old account ({}) now answers the new coordinator only: sign its \
+                     sweep with `qr sign --as cosigner --state {}`",
+                    old.address,
+                    old_state.display()
+                );
+            }
         }
         _ => return Err("--as must be coordinator or cosigner".into()),
     }

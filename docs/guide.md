@@ -177,6 +177,31 @@ The wallet holds one FROST account per network. To run the guide again:
    account in a folder that already holds one. Keep the old folder if coins
    are left on the old account.
 
+## After a lost device
+
+The protocol never repairs an account: the two remaining members create a new
+one and move the funds to it (spec § 7.2). With the test co-signer:
+
+- **The wallet's computer is lost:** a new coordinator restores member 3 from
+  its backup and pairs with the co-signer, which describes the old account;
+  the new coordinator checks it against the backup before it goes on. Then the
+  old account's funds are swept to the new one, signed by member 3 and the
+  co-signer:
+
+  ```bash
+  frost-zec qr recover --as cosigner --state new-cosigner --old-state my-cosigner --via clipboard
+  frost-zec qr recover --as coordinator --network test --state new-wallet --old-state restored       --backup member3.zkfrost --via clipboard
+  ```
+
+  The wallet's own screens for this come later; until then this is a test of
+  the protocol, between two `frost-zec` processes.
+- **The co-signer is lost:** the coordinator restores member 3 and signs the
+  sweep with members 1 and 3 itself:
+  `frost-zec qr sign-local --state my-wallet --backup member3.zkfrost --pczt sweep.pczt --out signed.pczt`.
+
+Keep member 3 as a backup file (`frost-zec backup protect`): it holds the
+account's viewing key too, so a co-signer cannot describe another account.
+
 ## If something goes wrong
 
 - **Windows blocks the co-signer** ("Smart App Control blocked a potentially

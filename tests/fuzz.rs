@@ -242,6 +242,7 @@ fn every_decoder_survives_mutated_input() {
             }
             3 => {
                 let _ = Done::from_bytes(&input);
+                let _ = frost_zec::recovery::GroupInfo::from_bytes(&input);
                 let _ = Request::from_bytes(&input);
                 let _ = Reply::from_bytes(&input);
             }

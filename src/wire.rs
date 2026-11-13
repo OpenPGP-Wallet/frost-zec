@@ -62,6 +62,9 @@ pub mod kind {
     pub const SIGN_REQUEST: u8 = 51;
     /// The co-signer's commitments and shares, or its refusal.
     pub const SIGN_REPLY: u8 = 52;
+    /// The old group's public key package and viewing key, from the co-signer
+    /// to a new coordinator during recovery (spec § 7.2).
+    pub const GROUP_INFO: u8 = 64;
 }
 
 /// Why a message or a QR stream was refused.
