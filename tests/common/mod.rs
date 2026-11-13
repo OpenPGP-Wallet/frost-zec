@@ -7,6 +7,8 @@
 
 use std::convert::Infallible;
 
+use frost_zec::pczt_io;
+
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
 use orchard::note::{ExtractedNoteCommitment, RandomSeed, Rho};
 use orchard::tree::{MerkleHashOrchard, MerklePath};
@@ -64,39 +66,82 @@ pub struct Tx {
     pub fee: Option<u64>,
     /// An expiry height set by hand instead of the builder's default.
     pub expiry: Option<u32>,
+    /// The value of a second note of the owner, spent in the same bundle.
+    pub second_spend: Option<u64>,
+    /// The height the transaction targets, instead of [`HEIGHT`].
+    pub height: Option<u32>,
 }
 
 pub fn fee(logical_actions: u64) -> u64 {
     MARGINAL_FEE * logical_actions.max(2)
 }
 
-fn note_for(owner: &FullViewingKey, value: u64) -> (Note, MerklePath, Anchor) {
+fn new_note(owner: &FullViewingKey, value: u64) -> Note {
     let rho = (0..)
         .find_map(|_| Rho::from_bytes(&rand::random()).into_option())
         .unwrap();
     let rseed = (0..)
         .find_map(|_| RandomSeed::from_bytes(rand::random(), &rho).into_option())
         .unwrap();
-    let note = Note::from_parts(
+    Note::from_parts(
         owner.address_at(0u32, Scope::External),
         NoteValue::from_raw(value),
         rho,
         rseed,
         NoteVersion::V3,
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn cmx(note: &Note) -> ExtractedNoteCommitment {
+    ExtractedNoteCommitment::from(note.commitment())
+}
+
+fn note_for(owner: &FullViewingKey, value: u64) -> (Note, MerklePath, Anchor) {
+    let note = new_note(owner, value);
     let path = MerklePath::from_parts(11, [MerkleHashOrchard::from_bytes(&[0; 32]).unwrap(); 32]);
-    let anchor = path.root(ExtractedNoteCommitment::from(note.commitment()));
+    let anchor = path.root(cmx(&note));
     (note, path, anchor)
+}
+
+/// Two notes side by side at positions 0 and 1 of a made-up tree, so both
+/// paths lead to the same anchor.
+fn two_notes_for(
+    owner: &FullViewingKey,
+    first: u64,
+    second: u64,
+) -> ([(Note, MerklePath); 2], Anchor) {
+    let zero = MerkleHashOrchard::from_bytes(&[0; 32]).unwrap();
+    let (a, b) = (new_note(owner, first), new_note(owner, second));
+    let mut siblings_a = [zero; 32];
+    siblings_a[0] = MerkleHashOrchard::from_cmx(&cmx(&b));
+    let mut siblings_b = [zero; 32];
+    siblings_b[0] = MerkleHashOrchard::from_cmx(&cmx(&a));
+    let (path_a, path_b) = (
+        MerklePath::from_parts(0, siblings_a),
+        MerklePath::from_parts(1, siblings_b),
+    );
+    let anchor = path_a.root(cmx(&a));
+    assert_eq!(anchor, path_b.root(cmx(&b)));
+    ([(a, path_a), (b, path_b)], anchor)
 }
 
 /// Builds the PCZT; `group` is the group whose outgoing viewing keys encrypt
 /// the outputs.
 pub fn build(group: &FullViewingKey, tx: Tx) -> Pczt {
-    let (note, path, anchor) = note_for(&tx.owner, tx.spend);
+    let (spends, anchor) = match tx.second_spend {
+        None => {
+            let (note, path, anchor) = note_for(&tx.owner, tx.spend);
+            (vec![(note, path)], anchor)
+        }
+        Some(second) => {
+            let (spends, anchor) = two_notes_for(&tx.owner, tx.spend, second);
+            (spends.to_vec(), anchor)
+        }
+    };
     let mut builder = Builder::new(
         MainNetwork,
-        HEIGHT.into(),
+        tx.height.unwrap_or(HEIGHT).into(),
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: tx.orchard_payment.as_ref().map(|_| Anchor::empty_tree()),
@@ -108,9 +153,11 @@ pub fn build(group: &FullViewingKey, tx: Tx) -> Pczt {
     if let Some(expiry) = tx.expiry {
         builder = builder.with_expiry_height(expiry.into());
     }
-    builder
-        .add_ironwood_spend::<Infallible>(tx.owner.clone(), note, path)
-        .unwrap();
+    for (note, path) in spends {
+        builder
+            .add_ironwood_spend::<Infallible>(tx.owner.clone(), note, path)
+            .unwrap();
+    }
     for output in tx.outputs {
         let ovk = match output.ovk {
             Ovk::External => Some(group.to_ovk(Scope::External)),
@@ -191,5 +238,153 @@ pub fn honest(group: &FullViewingKey, memo: MemoBytes) -> Tx {
         finalize: true,
         fee: None,
         expiry: None,
+        second_spend: None,
+        height: None,
     }
+}
+
+/// The ordinary case paid from two of the group's notes: two spends to sign.
+pub fn two_spends(group: &FullViewingKey, memo: MemoBytes) -> Tx {
+    let mut tx = honest(group, memo);
+    tx.second_spend = Some(SPEND);
+    tx.outputs[1].value = 2 * SPEND - PAYMENT - fee(2);
+    tx
+}
+
+/// An output that moves no value, with a memo the user would not see unless
+/// the co-signer shows it.
+pub fn zero_value_output(to: Address, ovk: Ovk) -> Output {
+    Output {
+        to,
+        value: 0,
+        memo: text_memo("not shown"),
+        ovk,
+    }
+}
+
+// Changes made to a built PCZT, as a dishonest coordinator would.
+
+/// The number of Ironwood actions.
+pub fn action_count(pczt: &Pczt) -> usize {
+    let mut count = 0;
+    pczt::roles::low_level_signer::Signer::new(pczt.clone())
+        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
+            count = bundle.actions().len();
+            Ok(())
+        })
+        .unwrap();
+    count
+}
+
+/// Flips one byte inside the note ciphertext of the output worth `value`. The
+/// note commitment still matches the claimed note, so only decrypting the
+/// ciphertext can notice: the recipient would never find these funds.
+pub fn garble_ciphertext(pczt: &Pczt, value: u64) -> Pczt {
+    let mut ciphertext = None;
+    pczt::roles::low_level_signer::Signer::new(pczt.clone())
+        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
+            for action in bundle.actions() {
+                if action.output().value().map(|v| v.inner()) == Some(value) {
+                    ciphertext = Some(
+                        action
+                            .output()
+                            .encrypted_note()
+                            .enc_ciphertext
+                            .as_ref()
+                            .to_vec(),
+                    );
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    let ciphertext = ciphertext.expect("an output with this value");
+    let mut bytes = pczt_io::serialize(pczt.clone()).unwrap();
+    let at = bytes
+        .windows(ciphertext.len())
+        .position(|window| window == ciphertext.as_slice())
+        .expect("the ciphertext in the serialized PCZT");
+    bytes[at + 100] ^= 1;
+    pczt_io::parse(&bytes).unwrap()
+}
+
+/// Sets the randomizer of the spend worth `value` to zero and its `rk` to the
+/// group key `ak` to match, as a dishonest builder could (it proves after the
+/// signing, so the proof follows). Every such spend would show the same `rk`
+/// on chain.
+pub fn zero_randomizer(pczt: &Pczt, group: &FullViewingKey, value: u64) -> Pczt {
+    let mut found = None;
+    pczt::roles::low_level_signer::Signer::new(pczt.clone())
+        .sign_ironwood_with(|_, bundle, _| -> Result<(), pczt_io::TxError> {
+            for action in bundle.actions() {
+                let spend = action.spend();
+                if spend.value().map(|v| v.inner()) == Some(value) {
+                    let alpha = spend.alpha().unwrap();
+                    found = Some((
+                        ff::PrimeField::to_repr(&alpha),
+                        <[u8; 32]>::from(spend.rk()),
+                    ));
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    let (alpha, rk) = found.expect("the group's spend");
+    let ak: [u8; 32] = group.to_bytes()[..32].try_into().unwrap();
+    let mut bytes = pczt_io::serialize(pczt.clone()).unwrap();
+    for (old, new) in [(alpha, [0u8; 32]), (rk, ak)] {
+        let at = bytes
+            .windows(32)
+            .position(|window| window == old)
+            .expect("the field in the serialized PCZT");
+        bytes[at..at + 32].copy_from_slice(&new);
+    }
+    pczt_io::parse(&bytes).unwrap()
+}
+
+/// A unified address with several receivers, as wallets hand them out: the
+/// given Orchard receiver and a transparent one, in the given revision of the
+/// encoding (Revision 2 gives `tu1…`).
+pub fn invoice_address_in(
+    revision: zcash_address::unified::Revision,
+    orchard: &Address,
+    network: zcash_protocol::consensus::NetworkType,
+) -> String {
+    use zcash_address::unified::{self, Encoding};
+    unified::Address::try_from_items(
+        revision,
+        vec![
+            unified::Uitem::Data(unified::Receiver::Orchard(orchard.to_raw_address_bytes())),
+            unified::Uitem::Data(unified::Receiver::P2pkh([7; 20])),
+        ],
+    )
+    .unwrap()
+    .encode(&network)
+}
+
+/// [`invoice_address_in`] in Revision 0, the one most wallets show.
+pub fn invoice_address(
+    orchard: &Address,
+    network: zcash_protocol::consensus::NetworkType,
+) -> String {
+    invoice_address_in(zcash_address::unified::Revision::R0, orchard, network)
+}
+
+/// Writes `address` as the `user_address` of every output, as
+/// zcash_client_backend does for a payment's output.
+pub fn named(pczt: Pczt, address: &str) -> Pczt {
+    let count = action_count(&pczt);
+    let mut labelled = pczt;
+    for index in 0..count {
+        labelled = pczt::roles::updater::Updater::new(labelled)
+            .update_ironwood_with(|mut bundle| {
+                bundle.update_action_with(index, |mut action| {
+                    action.set_output_user_address(address.into());
+                    Ok(())
+                })
+            })
+            .unwrap()
+            .finish();
+    }
+    labelled
 }

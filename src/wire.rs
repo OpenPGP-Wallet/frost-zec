@@ -22,7 +22,9 @@ use zeroize::Zeroizing;
 
 use crate::channel::{self, NONCE_SIZE, PAIRING_ID_SIZE, Pairing};
 
+/// The message format version, carried in every message.
 pub const VERSION: u8 = 0;
+/// The Uniform Resource type: texts and QR codes start with `ur:zcash-frost/`.
 pub const UR_TYPE: &str = "zcash-frost";
 /// The largest payload a reader accepts, after reassembly (a PCZT for a few
 /// spends is well under this).
@@ -36,28 +38,53 @@ pub const MAX_FRAGMENTS: usize = 1024;
 pub const MAX_SESSION_SIZE: usize = 32;
 
 /// Message kinds. Pairing kinds travel in clear; the others only inside
-/// [`SEALED`], where the kind is bound to the ciphertext.
+/// [`SEALED`](crate::wire::kind::SEALED), where the kind is bound to the
+/// ciphertext.
 pub mod kind {
+    /// Pairing message 1, in clear (spec § 3.1).
     pub const PAIR_INIT: u8 = 1;
+    /// Pairing message 2, in clear.
     pub const PAIR_RESPONSE: u8 = 2;
+    /// Pairing message 3, in clear.
     pub const PAIR_CONFIRM: u8 = 3;
+    /// The envelope of every message after pairing (spec § 3.4).
     pub const SEALED: u8 = 16;
+    /// DKG round 1 packages and `sk` commitments (spec § 4).
     pub const DKG_ROUND1: u8 = 32;
+    /// DKG round 2 packages, `sk` reveals and the transcript echo.
     pub const DKG_ROUND2: u8 = 33;
-    pub const SIGN_COMMITMENTS: u8 = 48;
-    pub const SIGN_REQUEST: u8 = 49;
-    pub const SIGN_REPLY: u8 = 50;
+    /// The co-signer's acknowledgement that key generation is done and member
+    /// 3 is exported (spec § 4).
+    pub const DKG_DONE: u8 = 34;
+    // 48 to 50 were the three signing messages of draft v0.1: reserved, so a
+    // device from that draft and one from v1.0 refuse each other's messages.
+    /// The coordinator's request: the PCZT and its commitments (spec § 5).
+    pub const SIGN_REQUEST: u8 = 51;
+    /// The co-signer's commitments and shares, or its refusal.
+    pub const SIGN_REPLY: u8 = 52;
+    /// The old group's public key package and viewing key, from the co-signer
+    /// to a new coordinator during recovery (spec § 7.2).
+    pub const GROUP_INFO: u8 = 64;
 }
 
+/// Why a message or a QR stream was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
+    /// Over [`MAX_PAYLOAD_SIZE`] bytes, or a part longer than any message.
     TooLarge,
+    /// A stream announcing more than [`MAX_FRAGMENTS`] fragments.
     TooManyFragments,
+    /// Not a `ur:zcash-frost` text: the type found.
     WrongUrType(String),
+    /// A message version this code does not know.
     UnknownVersion(u8),
+    /// A message of another kind than expected.
     UnexpectedKind(u8),
+    /// A sealed message for another pairing.
     WrongPairing,
+    /// Not valid CBOR, UR or fountain data, or a stream that does not complete.
     Malformed(String),
+    /// Refused by the pairing layer, for instance a failed authentication.
     Channel(channel::ChannelError),
 }
 
@@ -94,10 +121,13 @@ fn malformed(e: impl fmt::Display) -> WireError {
 #[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
 #[cbor(map)]
 pub struct Message {
+    /// [`VERSION`].
     #[n(1)]
     pub version: u8,
+    /// One of [`kind`].
     #[n(2)]
     pub kind: u8,
+    /// The CBOR encoding of the kind's own map.
     #[n(3)]
     #[cbor(with = "minicbor::bytes")]
     pub body: Vec<u8>,
@@ -179,6 +209,7 @@ impl Message {
         Ok(())
     }
 
+    /// A pair-init message.
     pub fn pair_init(init: &channel::PairInit) -> Message {
         Message::new(
             kind::PAIR_INIT,
@@ -189,6 +220,7 @@ impl Message {
         )
     }
 
+    /// Reads a pair-init message; refuses any other kind.
     pub fn to_pair_init(&self) -> Result<channel::PairInit, WireError> {
         self.expect(kind::PAIR_INIT)?;
         let body: PairInitBody = decode(&self.body)?;
@@ -199,6 +231,7 @@ impl Message {
         })
     }
 
+    /// A pair-response message.
     pub fn pair_response(response: &channel::PairResponse) -> Message {
         Message::new(
             kind::PAIR_RESPONSE,
@@ -209,6 +242,7 @@ impl Message {
         )
     }
 
+    /// Reads a pair-response message; refuses any other kind.
     pub fn to_pair_response(&self) -> Result<channel::PairResponse, WireError> {
         self.expect(kind::PAIR_RESPONSE)?;
         let body: PairResponseBody = decode(&self.body)?;
@@ -219,6 +253,7 @@ impl Message {
         })
     }
 
+    /// A pair-confirm message.
     pub fn pair_confirm(confirm: &channel::PairConfirm) -> Message {
         Message::new(
             kind::PAIR_CONFIRM,
@@ -228,6 +263,7 @@ impl Message {
         )
     }
 
+    /// Reads a pair-confirm message; refuses any other kind.
     pub fn to_pair_confirm(&self) -> Result<channel::PairConfirm, WireError> {
         self.expect(kind::PAIR_CONFIRM)?;
         let body: PairConfirmBody = decode(&self.body)?;
@@ -321,6 +357,8 @@ pub fn encode_payload(messages: &[Message]) -> Vec<u8> {
     encode(&messages.to_vec())
 }
 
+/// Reads the payload of a QR stream: at most [`MAX_PAYLOAD_SIZE`] bytes, at
+/// least one message, every message in a known version.
 pub fn decode_payload(bytes: &[u8]) -> Result<Vec<Message>, WireError> {
     if bytes.len() > MAX_PAYLOAD_SIZE {
         return Err(WireError::TooLarge);

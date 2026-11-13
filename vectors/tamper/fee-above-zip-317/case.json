@@ -1,0 +1,35 @@
+{
+  "accepted": {
+    "sha256": "812790953f63f74b571efcf646ad2c0bc2746b60dfe4c2958da147e1e1c11a1c",
+    "sighash": "2b1db02488dd6a04b0b7d09624b48f9312b3e7932a7840a6feccec0213b835e1"
+  },
+  "approved": {
+    "payments": [
+      {
+        "address": "u1evdt2sqv0hgjvmg9uhl50q7xlawxaehlvk7eldmwspz58w374kylvy0fm8mncqggldputmy5uztk384s6k7k9kkr9al5559n6cpfnkc5",
+        "amount": 400000,
+        "memo": "invoice 42"
+      }
+    ]
+  },
+  "changed": "change lowered by 50,000 zatoshis; fee raised by as much",
+  "class": [
+    "fee"
+  ],
+  "clock": 1794101577,
+  "description": "The fee shown is true, but above ZIP 317 for the two actions the payment needs.",
+  "fee_rule": "zip317",
+  "format": 1,
+  "group": {
+    "own_addresses": [
+      "u1u4zdvtcrjt4cnffw3shrx440754g0mhr4a7fenck686tfr6rdqy9wu5v39ydpgm4ut37qnlh9kpw9fsp8wcwyu2y2r5stjhj0qwfnmrq"
+    ],
+    "ufvk": "uview1pts2jac4k89kfspszysy9el720ftantyfghjurj0gnuksfzeksudh8wwdftfdlvn87wpwkzwv27unfh9s0mjh6g8w3m7zfx7yxclnqhck22kzz5x3l47ue39vy5d0896mgqyg2pgrsux694zxdthj0nr9yz5wnq86ec86qp6qljyk08udlq2vtcvjwq5e"
+  },
+  "height": 3550000,
+  "id": "fee-above-zip-317",
+  "network": "main",
+  "refused": {
+    "sha256": "887f36f7d95d58696fa05c8e7bde3136f0eeb18fe56505c23ff659ac2db8cc5b"
+  }
+}

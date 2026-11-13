@@ -13,9 +13,11 @@
 //! coordinator reveals last, but committed before seeing anything revealed,
 //! so nobody chooses `sk`. The keys then follow ZIP 2005 (`use_qsk`).
 //!
-//! With pairing, the exchange takes five QR streams: pair-init; pair-response;
+//! With pairing, the exchange takes six QR streams: pair-init; pair-response;
 //! pair-confirm with the coordinator's round 1; once the code is confirmed,
-//! the co-signer's round 1 and round 2; and the coordinator's round 2.
+//! the co-signer's round 1 and round 2; the coordinator's round 2; and the
+//! co-signer's acknowledgement, [`Done`], sent once member 3 is exported,
+//! checked and deleted. The coordinator shows no address before it holds.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -31,16 +33,23 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::cosigning::Member;
 use crate::{backup, keys, signing};
 
+/// The version bound into the `sk` commitments and the transcript.
 pub const VERSION: u8 = 0;
+/// The threshold: any two members sign.
 pub const MIN_SIGNERS: u16 = 2;
+/// The group size.
 pub const MAX_SIGNERS: u16 = 3;
+/// Member 1, the coordinator.
 pub const COORDINATOR: u16 = 1;
+/// Member 2, the co-signer.
 pub const COSIGNER: u16 = 2;
+/// Member 3, the backup, created on the co-signer and exported.
 pub const BACKUP: u16 = 3;
 
 const PERSONAL_COMMIT: &[u8; 16] = b"ZcashFROSTv0SkCm";
 const PERSONAL_TRANSCRIPT: &[u8; 16] = b"ZcashFROSTv0DkgT";
 const PERSONAL_SK: &[u8; 16] = b"ZcashFROSTv0DkSk";
+const PERSONAL_DONE: &[u8; 16] = b"ZcashFROSTv0Done";
 
 fn identifier(member: u16) -> Identifier {
     Identifier::try_from(member).expect("1, 2 and 3 are valid identifiers")
@@ -118,21 +127,27 @@ pub fn sk_for_vectors(
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round1Entry {
+    /// The member's identifier, 1 to 3.
     #[n(1)]
     pub member: u16,
+    /// The serialized FROST DKG round 1 package.
     #[n(2)]
     #[cbor(with = "minicbor::bytes")]
     pub package: Vec<u8>,
+    /// `c_i`, the commitment to the member's contribution to `sk`.
     #[n(3)]
     #[cbor(with = "minicbor::bytes")]
     pub sk_commitment: [u8; 32],
 }
 
+/// A device's round 1: one entry per member it plays.
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round1 {
+    /// 0 for mainnet, 1 for testnet; bound into the transcript.
     #[n(1)]
     pub network: u8,
+    /// The entries of the members this device plays.
     #[n(2)]
     pub entries: Vec<Round1Entry>,
 }
@@ -142,10 +157,13 @@ pub struct Round1 {
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round2Entry {
+    /// The sending member.
     #[n(1)]
     pub from: u16,
+    /// The receiving member.
     #[n(2)]
     pub to: u16,
+    /// The serialized FROST DKG round 2 package. Secret.
     #[n(3)]
     #[cbor(with = "minicbor::bytes")]
     pub package: Vec<u8>,
@@ -157,11 +175,15 @@ impl Drop for Round2Entry {
     }
 }
 
+/// A member's contribution to `sk`, revealed in round 2. Secret until all
+/// three are combined.
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Reveal {
+    /// The member.
     #[n(1)]
     pub member: u16,
+    /// `r_i`, which must open the member's round 1 commitment.
     #[n(2)]
     #[cbor(with = "minicbor::bytes")]
     pub contribution: [u8; 32],
@@ -173,11 +195,14 @@ impl Drop for Reveal {
     }
 }
 
+/// A device's round 2. It holds secrets: it only ever travels sealed.
 #[derive(Encode, Decode, Clone)]
 #[cbor(map)]
 pub struct Round2 {
+    /// The round 2 packages this device sends.
     #[n(1)]
     pub packages: Vec<Round2Entry>,
+    /// The contributions of the members this device plays.
     #[n(2)]
     pub reveals: Vec<Reveal>,
     /// The transcript hash `T` as the sender saw it.
@@ -189,10 +214,12 @@ pub struct Round2 {
 macro_rules! cbor_bytes {
     ($t:ty) => {
         impl $t {
-            /// Round 2 holds secrets: the bytes are wiped when dropped.
+            /// The CBOR encoding. Round 2 holds secrets, so the bytes are
+            /// wiped when dropped.
             pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
                 Zeroizing::new(minicbor::to_vec(self).expect("encoding to memory cannot fail"))
             }
+            /// Reads the CBOR encoding.
             pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
                 Ok(minicbor::decode(bytes)?)
             }
@@ -204,11 +231,14 @@ cbor_bytes!(Round2);
 
 /// What a member ends up with.
 pub struct Group {
+    /// The member, ready to sign.
     pub member: Member,
     /// `sk`, from which `nk`, `rivk` and `qsk` derive. Secret: ZIP 2005 asks
     /// to protect it like `ask`.
     pub sk: [u8; 32],
+    /// The group's unified full viewing key, encoded.
     pub ufvk: String,
+    /// The group's default unified address, which both devices show.
     pub address: String,
 }
 
@@ -237,6 +267,146 @@ impl Group {
     /// The member backup string (zcash/zips#1432, version 1).
     pub fn backup_string(&self) -> Result<String, Box<dyn Error>> {
         backup::Backup::new(&self.member.key_package, MAX_SIGNERS, &self.sk)?.encode()
+    }
+
+    /// The digest of the group this member ended with ([`group_digest`]).
+    pub fn digest(&self) -> Result<[u8; 32], Box<dyn Error>> {
+        group_digest(&self.member, &self.ufvk)
+    }
+
+    /// The co-signer's acknowledgement, once member 3 is exported, checked
+    /// and deleted.
+    pub fn done(&self) -> Result<Done, Box<dyn Error>> {
+        Done::new(&self.member, &self.ufvk)
+    }
+
+    /// The coordinator's check of the co-signer's acknowledgement: until it
+    /// holds, the coordinator shows no address to fund.
+    pub fn check_done(&self, done: &Done) -> Result<(), Box<dyn Error>> {
+        check_done(&self.member, &self.ufvk, done)
+    }
+}
+
+/// The digest of the group `member` belongs to, whose unified full viewing key
+/// is `ufvk`: its parameters, the group key, every member's verifying share and
+/// the viewing key (spec § 4.1). Both devices compute it; the co-signer sends
+/// its own in [`Done`]. Needs no secret, so a device can compute it again later
+/// from what it stored.
+pub fn group_digest(member: &Member, ufvk: &str) -> Result<[u8; 32], Box<dyn Error>> {
+    let pkp = &member.public_key_package;
+    let mut members = Vec::new();
+    for (id, share) in pkp.verifying_shares() {
+        let id: [u8; 32] = id.serialize().try_into().map_err(|_| "identifier size")?;
+        let share: [u8; 32] = share.serialize()?.try_into().map_err(|_| "share size")?;
+        members.push((id, share));
+    }
+    done_digest(
+        network_byte(member.network)?,
+        *member.key_package.min_signers(),
+        &signing::group_ak(pkp)?,
+        &members,
+        ufvk,
+    )
+}
+
+/// The coordinator's check of the co-signer's acknowledgement, from what it
+/// stored: `member` and the group's `ufvk`.
+pub fn check_done(member: &Member, ufvk: &str, done: &Done) -> Result<(), Box<dyn Error>> {
+    if done.digest != group_digest(member, ufvk)? {
+        return Err(
+            "the co-signer ended key generation with a different group: \
+                    do not use this account"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// `D` of spec § 4.1, from its parts: `members` holds each member's 32-byte
+/// identifier and verifying share, in identifier order.
+fn done_digest(
+    network: u8,
+    t: u16,
+    ak: &[u8; 32],
+    members: &[([u8; 32], [u8; 32])],
+    ufvk: &str,
+) -> Result<[u8; 32], Box<dyn Error>> {
+    let n = u16::try_from(members.len())?;
+    let shares: Vec<u8> = members
+        .iter()
+        .flat_map(|(id, share)| id.iter().chain(share).copied())
+        .collect();
+    let ufvk = ufvk.as_bytes();
+    Ok(hash(
+        PERSONAL_DONE,
+        &[
+            &[VERSION, network],
+            &t.to_le_bytes(),
+            &n.to_le_bytes(),
+            ak,
+            &shares,
+            &u32::try_from(ufvk.len())?.to_le_bytes(),
+            ufvk,
+        ],
+    ))
+}
+
+/// `D` for test vectors (spec § 4.1).
+#[doc(hidden)]
+pub fn done_digest_for_vectors(
+    network: u8,
+    t: u16,
+    ak: &[u8; 32],
+    members: &[([u8; 32], [u8; 32])],
+    ufvk: &str,
+) -> [u8; 32] {
+    done_digest(network, t, ak, members, ufvk).expect("vector inputs fit")
+}
+
+/// Checks the backup string the co-signer exported for member 3 against the
+/// group it ended with: the string must restore, under ZIP 2005, to member 3
+/// of this very group. The co-signer runs it on what it actually wrote, then
+/// deletes member 3, then acknowledges (spec § 4).
+pub fn check_backup(text: &str, group: &Group) -> Result<(), Box<dyn Error>> {
+    let restored = backup::restore(text.trim(), &group.ufvk)?;
+    backup::check_member(&restored, &group.member.public_key_package)?;
+    if *restored.key_package.identifier() != identifier(BACKUP) {
+        return Err("the backup string is not member 3".into());
+    }
+    if restored.derivation != backup::Derivation::Zip2005 {
+        return Err("the backup string does not follow ZIP 2005".into());
+    }
+    Ok(())
+}
+
+/// The co-signer's acknowledgement that key generation is done: the
+/// [`Group::digest`] it computed, sealed under [`crate::wire::kind::DKG_DONE`].
+#[derive(Encode, Decode, Clone)]
+#[cbor(map)]
+pub struct Done {
+    /// The co-signer's digest of the group.
+    #[n(1)]
+    #[cbor(with = "minicbor::bytes")]
+    pub digest: [u8; 32],
+}
+
+impl Done {
+    /// The acknowledgement for the group `member` belongs to, whose viewing key
+    /// is `ufvk`. A co-signer sends it once member 3 is exported, checked and
+    /// deleted, and may send it again later from what it stored.
+    pub fn new(member: &Member, ufvk: &str) -> Result<Done, Box<dyn Error>> {
+        Ok(Done {
+            digest: group_digest(member, ufvk)?,
+        })
+    }
+
+    /// The CBOR encoding.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        minicbor::to_vec(self).expect("encoding to memory cannot fail")
+    }
+    /// Reads the CBOR encoding.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        Ok(minicbor::decode(bytes)?)
     }
 }
 
@@ -691,6 +861,31 @@ mod tests {
         // The backup string restores member 3 against the group's viewing key.
         let restored = backup::restore(&three.backup_string().unwrap(), &three.ufvk).unwrap();
         drop(restored);
+    }
+
+    #[test]
+    fn the_acknowledgement_and_the_backup_check() {
+        let (one, two, three) = run();
+        // Every member computes the same digest of the group.
+        assert_eq!(one.digest().unwrap(), two.digest().unwrap());
+        assert_eq!(two.digest().unwrap(), three.digest().unwrap());
+        check_backup(&three.backup_string().unwrap(), &two).unwrap();
+        // Surrounding whitespace, as an editor may add to a file, is fine.
+        check_backup(&format!("{}\r\n", three.backup_string().unwrap()), &two).unwrap();
+        let done = Done::from_bytes(&two.done().unwrap().to_bytes()).unwrap();
+        one.check_done(&done).unwrap();
+        let mut wrong = done.clone();
+        wrong.digest[31] ^= 1;
+        assert!(one.check_done(&wrong).is_err());
+        // Member 2's string is not member 3's.
+        let refused = check_backup(&two.backup_string().unwrap(), &two)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("not member 3"), "{refused}");
+        // Another group's acknowledgement and member 3 are refused.
+        let (other, _, other_three) = run();
+        assert!(other.check_done(&done).is_err());
+        assert!(check_backup(&other_three.backup_string().unwrap(), &two).is_err());
     }
 
     #[test]

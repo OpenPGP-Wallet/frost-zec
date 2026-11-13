@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use frost_zec::cosigning::{CoordinatorSession, CosignerSession, Member, Reply, Request};
+use frost_zec::cosigning::{self, CoordinatorSession, Member, Reply, Request};
 use frost_zec::{dkg, keys, pczt_io, signing};
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
@@ -42,15 +42,23 @@ fn refusal(reply: Reply) -> String {
     }
 }
 
+fn new_request(members: &[Member], pczt: &[u8]) -> (CoordinatorSession, Request) {
+    let (coordinating, request, _) =
+        CoordinatorSession::request(&members[0], pczt, &mut UnwrapErr(SysRng)).unwrap();
+    (coordinating, request)
+}
+
 #[test]
 fn any_two_members_sign_and_the_signatures_are_inserted() {
     let members = group();
     let pczt = payment(&members);
     for (coordinator, cosigner) in [(0, 1), (0, 2), (1, 2)] {
-        let (session, opening) = CosignerSession::open(&members[cosigner], &mut UnwrapErr(SysRng));
         let (coordinating, request, _) =
-            CoordinatorSession::request(&members[coordinator], &pczt, &opening).unwrap();
-        let pending = session.review(&request).ok().expect("an honest request");
+            CoordinatorSession::request(&members[coordinator], &pczt, &mut UnwrapErr(SysRng))
+                .unwrap();
+        let pending = cosigning::review(&members[cosigner], &request)
+            .ok()
+            .expect("an honest request");
         let shown = pending.report().lines.join("\n");
         assert!(shown.contains("PAY 0.00400000 ZEC"), "{shown}");
         assert!(shown.contains("memo: \"rent\""), "{shown}");
@@ -60,40 +68,34 @@ fn any_two_members_sign_and_the_signatures_are_inserted() {
     }
 }
 
-/// Runs messages 1 and 2, lets the test damage the request, and returns the
-/// co-signer's verdict.
+#[test]
+fn a_transaction_with_two_spends_is_signed() {
+    let members = group();
+    let pczt = pczt_io::serialize(build(
+        &members[0].fvk,
+        two_spends(&members[0].fvk, text_memo("rent")),
+    ))
+    .unwrap();
+    let (coordinating, request) = new_request(&members, &pczt);
+    assert_eq!(request.commitments.len(), 2);
+    let pending = cosigning::review(&members[1], &request)
+        .ok()
+        .expect("an honest request");
+    let signed = coordinating.finish(&pending.approve()).unwrap();
+    assert!(pczt_io::spends_to_sign(&signed).is_err());
+}
+
+/// Builds a request, lets the test damage it, and returns the co-signer's
+/// verdict.
 fn review_damaged(damage: impl FnOnce(&mut Request)) -> Result<String, String> {
     let members = group();
     let pczt = payment(&members);
-    let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
-    let (_, mut request, _) = CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
+    let (_, mut request) = new_request(&members, &pczt);
     damage(&mut request);
-    match session.review(&request) {
+    match cosigning::review(&members[1], &request) {
         Ok(pending) => Ok(pending.report().lines.join("\n")),
         Err(reply) => Err(refusal(reply)),
     }
-}
-
-#[test]
-fn a_bad_coordinator_share_is_refused_before_the_user_is_asked() {
-    let members = group();
-    let pczt = payment(&members);
-    let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
-    let (_, mut request, _) = CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
-    // A share from another run of the coordinator, made with other nonces.
-    let (_, other, _) = CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
-    request.shares = other.shares;
-    let refused = refusal(session.review(&request).err().unwrap());
-    assert!(
-        refused.contains("signature share does not verify"),
-        "{refused}"
-    );
-}
-
-#[test]
-fn a_request_for_another_session_is_refused() {
-    let refused = review_damaged(|request| request.session[0] ^= 1).unwrap_err();
-    assert!(refused.contains("another session"), "{refused}");
 }
 
 #[test]
@@ -113,8 +115,8 @@ fn a_request_claiming_the_cosigners_own_identifier_is_refused() {
 #[test]
 fn a_swapped_pczt_is_checked_on_its_own_and_refused() {
     let refused = review_damaged(|request| {
-        // Same session and shares, but another transaction: value leaving
-        // through an Orchard bundle.
+        // Same session and commitments, but another transaction: value
+        // leaving through an Orchard bundle.
         let members = group();
         let mut tx = honest(&members[0].fvk, MemoBytes::empty());
         tx.outputs[1].value = SPEND - PAYMENT - 3_000 - fee(4);
@@ -129,25 +131,69 @@ fn a_swapped_pczt_is_checked_on_its_own_and_refused() {
 }
 
 #[test]
-fn missing_or_extra_shares_are_refused() {
-    let refused = review_damaged(|request| request.shares.clear()).unwrap_err();
+fn missing_or_extra_commitments_are_refused() {
+    let refused = review_damaged(|request| request.commitments.clear()).unwrap_err();
     assert!(refused.contains("do not match"), "{refused}");
     let refused = review_damaged(|request| {
-        let extra = request.shares[0];
-        request.shares.push(extra);
+        let extra = request.commitments[0];
+        request.commitments.push(extra);
     })
     .unwrap_err();
     assert!(refused.contains("do not match"), "{refused}");
 }
 
 #[test]
-fn declining_sends_no_share() {
+fn a_repeated_coordinator_commitment_is_refused() {
+    // A transaction with two spends, where the coordinator reuses its first
+    // commitment for the second: it would give away its own share.
+    let members = group();
+    let pczt = pczt_io::serialize(build(
+        &members[0].fvk,
+        two_spends(&members[0].fvk, MemoBytes::empty()),
+    ))
+    .unwrap();
+    let (_, mut request) = new_request(&members, &pczt);
+    assert_eq!(request.commitments.len(), 2);
+    request.commitments[1] = request.commitments[0];
+    let refused = refusal(cosigning::review(&members[1], &request).err().unwrap());
+    assert!(refused.contains("repeats a commitment"), "{refused}");
+}
+
+#[test]
+fn every_review_draws_fresh_nonces() {
+    // The co-signer keeps no state: the same request reviewed twice gets two
+    // sets of commitments, never the same nonces twice.
     let members = group();
     let pczt = payment(&members);
-    let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
-    let (coordinating, request, _) =
-        CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
-    let reply = session.review(&request).ok().unwrap().decline();
+    let (_, request) = new_request(&members, &pczt);
+    let commitments = |reply: Reply| match reply {
+        Reply::Shares { commitments, .. } => commitments[0].serialize().unwrap(),
+        Reply::Refused { .. } => panic!("expected shares"),
+    };
+    let first = commitments(
+        cosigning::review(&members[1], &request)
+            .ok()
+            .unwrap()
+            .approve(),
+    );
+    let second = commitments(
+        cosigning::review(&members[1], &request)
+            .ok()
+            .unwrap()
+            .approve(),
+    );
+    assert_ne!(first, second);
+}
+
+#[test]
+fn declining_sends_no_commitment_and_no_share() {
+    let members = group();
+    let pczt = payment(&members);
+    let (coordinating, request) = new_request(&members, &pczt);
+    let reply = cosigning::review(&members[1], &request)
+        .ok()
+        .unwrap()
+        .decline();
     assert!(matches!(reply, Reply::Refused { .. }));
     let error = coordinating.finish(&reply).unwrap_err().to_string();
     assert!(error.contains("declined"), "{error}");
@@ -157,30 +203,68 @@ fn declining_sends_no_share() {
 fn the_coordinator_rejects_bad_or_foreign_replies() {
     let members = group();
     let pczt = payment(&members);
+    let approve = |request: &Request| match cosigning::review(&members[1], request)
+        .ok()
+        .unwrap()
+        .approve()
+    {
+        Reply::Shares {
+            session,
+            member,
+            commitments,
+            shares,
+        } => (session, member, commitments, shares),
+        Reply::Refused { .. } => panic!("expected shares"),
+    };
 
     // A reply for another session.
-    let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
-    let (coordinating, request, _) =
-        CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
-    let Reply::Shares { member, shares, .. } = session.review(&request).ok().unwrap().approve()
-    else {
-        panic!("expected shares")
-    };
+    let (coordinating, request) = new_request(&members, &pczt);
+    let (_, member, commitments, shares) = approve(&request);
     let foreign = Reply::Shares {
         session: [0; 16],
         member,
+        commitments: commitments.clone(),
         shares: shares.clone(),
     };
-    assert!(coordinating.finish(&foreign).is_err());
+    let error = coordinating.finish(&foreign).unwrap_err().to_string();
+    assert!(error.contains("another session"), "{error}");
 
-    // A reply whose shares were made for another request.
-    let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
-    let (coordinating, _, _) = CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
+    // A reply naming the coordinator itself, or a stranger.
+    for claimed in [1u16, 9] {
+        let (coordinating, request) = new_request(&members, &pczt);
+        let (session, _, commitments, shares) = approve(&request);
+        let wrong = Reply::Shares {
+            session,
+            member: Identifier::try_from(claimed).unwrap(),
+            commitments,
+            shares,
+        };
+        assert!(coordinating.finish(&wrong).is_err());
+    }
+
+    // A reply with shares made for another request: the aggregate does not
+    // verify, and the coordinator says whose share is at fault.
+    let (coordinating, request) = new_request(&members, &pczt);
+    let (session, member, commitments, _) = approve(&request);
+    let (_, other) = new_request(&members, &pczt);
+    let (_, _, _, other_shares) = approve(&other);
     let wrong = Reply::Shares {
-        session: opening.session,
+        session,
         member,
+        commitments,
+        shares: other_shares,
+    };
+    let error = coordinating.finish(&wrong).unwrap_err().to_string();
+    assert!(error.contains("co-signer's signature share"), "{error}");
+
+    // A reply with the wrong number of commitments.
+    let (coordinating, request) = new_request(&members, &pczt);
+    let (session, member, _, shares) = approve(&request);
+    let wrong = Reply::Shares {
+        session,
+        member,
+        commitments: Vec::new(),
         shares,
     };
     assert!(coordinating.finish(&wrong).is_err());
-    drop(session);
 }

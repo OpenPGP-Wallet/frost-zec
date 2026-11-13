@@ -7,11 +7,9 @@ mod common;
 
 use common::*;
 use frost_zec::channel::{Initiator, Pairing, Responder};
-use frost_zec::cosigning::{
-    Commitments, CoordinatorSession, CosignerSession, Reply, Request, SESSION_ID_SIZE,
-};
+use frost_zec::cosigning::{self, CoordinatorSession, Reply, Request, SESSION_ID_SIZE};
 use frost_zec::pczt_io;
-use frost_zec::setup::{CoordinatorSetup, CosignerSetup, Group, Round1, Round2};
+use frost_zec::setup::{self, CoordinatorSetup, CosignerSetup, Done, Group, Round1, Round2};
 use frost_zec::wire::{self, Message, kind};
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
@@ -110,10 +108,25 @@ fn pair_and_generate_keys(network: NetworkType) -> Devices {
         &mut rng,
     )
     .unwrap()]);
-    // 5. Co-signer: finishes.
+    // 5. Co-signer: finishes, exports member 3 and checks the string it
+    // exported against the group before it acknowledges.
     let (_, c2) = scanned[0].open(&pairing_s, kind::DKG_ROUND2).unwrap();
     let (cosigner, backup) = cosigner_setup
         .finish(&Round2::from_bytes(&c2).unwrap())
+        .unwrap();
+    setup::check_backup(&backup.backup_string().unwrap(), &cosigner).unwrap();
+    let scanned = qr(&[Message::seal(
+        &pairing_s,
+        kind::DKG_DONE,
+        b"dkg",
+        &cosigner.done().unwrap().to_bytes(),
+        &mut rng,
+    )
+    .unwrap()]);
+    // 6. Coordinator: shows the address only once the acknowledgement holds.
+    let (_, done) = scanned[0].open(&pairing_c, kind::DKG_DONE).unwrap();
+    coordinator
+        .check_done(&Done::from_bytes(&done).unwrap())
         .unwrap();
     Devices {
         coordinator: (pairing_c, coordinator),
@@ -141,22 +154,9 @@ fn pairing_key_generation_and_a_signature_over_qr_codes() {
     let fvk = &coordinator.member.fvk;
     let pczt = pczt_io::serialize(build(fvk, honest(fvk, text_memo("rent")))).unwrap();
 
-    // Message 1: the co-signer opens the session.
-    let (session, opening) = CosignerSession::open(&cosigner.member, &mut rng);
-    let scanned = qr(&[Message::seal(
-        pairing_s,
-        kind::SIGN_COMMITMENTS,
-        &opening.session,
-        &opening.to_bytes().unwrap(),
-        &mut rng,
-    )
-    .unwrap()]);
-    let (_, bytes) = scanned[0].open(pairing_c, kind::SIGN_COMMITMENTS).unwrap();
-    let opening = Commitments::from_bytes(&bytes).unwrap();
-
-    // Message 2: the coordinator's request, a multi-part QR stream.
+    // Message 1: the coordinator's request, a multi-part QR stream.
     let (coordinating, request, _) =
-        CoordinatorSession::request(&coordinator.member, &pczt, &opening).unwrap();
+        CoordinatorSession::request(&coordinator.member, &pczt, &mut rng).unwrap();
     let scanned = qr(&[Message::seal(
         pairing_c,
         kind::SIGN_REQUEST,
@@ -170,22 +170,28 @@ fn pairing_key_generation_and_a_signature_over_qr_codes() {
     assert_eq!(bound_session, request.session.to_vec());
 
     // The co-signer checks it and the user approves what is shown.
-    let pending = session.review(&request).ok().expect("an honest request");
-    let shown = pending.report().lines.join("\n");
+    let pending = cosigning::review(&cosigner.member, &request)
+        .ok()
+        .expect("an honest request");
+    let shown = pending.report().lines.join(
+        "
+",
+    );
     assert!(shown.contains("PAY 0.00400000 ZEC"), "{shown}");
     assert!(shown.contains("memo: \"rent\""), "{shown}");
     let reply = pending.approve();
 
-    // Message 3: the reply, then the coordinator finishes.
+    // Message 2: the reply, then the coordinator finishes.
     let scanned = qr(&[Message::seal(
         pairing_s,
         kind::SIGN_REPLY,
         &reply.session(),
-        &reply.to_bytes(),
+        &reply.to_bytes().unwrap(),
         &mut rng,
     )
     .unwrap()]);
-    let (_, bytes) = scanned[0].open(pairing_c, kind::SIGN_REPLY).unwrap();
+    let (bound_session, bytes) = scanned[0].open(pairing_c, kind::SIGN_REPLY).unwrap();
+    assert_eq!(bound_session, coordinating.session().to_vec());
     let signed = coordinating
         .finish(&Reply::from_bytes(&bytes).unwrap())
         .unwrap();
@@ -196,7 +202,7 @@ fn pairing_key_generation_and_a_signature_over_qr_codes() {
 }
 
 #[test]
-fn a_replayed_request_is_refused_by_a_new_session() {
+fn a_replayed_reply_is_refused_by_a_new_session() {
     let devices = pair_and_generate_keys(NetworkType::Test);
     let (_, coordinator) = &devices.coordinator;
     let (_, cosigner) = &devices.cosigner;
@@ -204,19 +210,45 @@ fn a_replayed_request_is_refused_by_a_new_session() {
     let fvk = &coordinator.member.fvk;
     let pczt = pczt_io::serialize(build(fvk, honest(fvk, text_memo("rent")))).unwrap();
 
-    let (first, opening) = CosignerSession::open(&cosigner.member, &mut rng);
-    let (_, request, _) =
-        CoordinatorSession::request(&coordinator.member, &pczt, &opening).unwrap();
-    let _ = first.review(&request).ok().unwrap().approve();
+    let (first, request, _) =
+        CoordinatorSession::request(&coordinator.member, &pczt, &mut rng).unwrap();
+    let reply = cosigning::review(&cosigner.member, &request)
+        .ok()
+        .unwrap()
+        .approve();
+    first.finish(&reply).unwrap();
 
-    // Someone who recorded the request shows it again to a new session.
-    let (second, _) = CosignerSession::open(&cosigner.member, &mut rng);
-    let refused = match second.review(&request) {
-        Err(Reply::Refused { reason, .. }) => reason,
-        _ => panic!("a replayed request must be refused"),
-    };
+    // Someone who recorded the reply shows it to a new session for the same
+    // transaction: it opened with new nonces and its own session id.
+    let (second, _, _) = CoordinatorSession::request(&coordinator.member, &pczt, &mut rng).unwrap();
+    let refused = second.finish(&reply).unwrap_err().to_string();
     assert!(refused.contains("another session"), "{refused}");
     assert_eq!(request.session.len(), SESSION_ID_SIZE);
+}
+
+#[test]
+fn an_acknowledgement_from_another_group_is_refused() {
+    let first = pair_and_generate_keys(NetworkType::Test);
+    let second = pair_and_generate_keys(NetworkType::Test);
+    let (_, coordinator) = &first.coordinator;
+    let (_, other) = &second.cosigner;
+    let refused = coordinator
+        .check_done(&other.done().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("different group"), "{refused}");
+    // Nor does another group's member 3 pass for this one.
+    assert!(
+        setup::check_backup(&second.backup.backup_string().unwrap(), &first.cosigner.1).is_err()
+    );
+    // And member 2's own string is not member 3.
+    assert!(
+        setup::check_backup(
+            &first.cosigner.1.backup_string().unwrap(),
+            &first.cosigner.1
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -228,7 +260,8 @@ fn a_refusal_reason_cannot_rewrite_the_coordinators_screen() {
         member: coordinator.member.id(),
         reason: format!("no\u{202E}\nPAY{}", "x".repeat(5000)),
     };
-    let Reply::Refused { reason, .. } = Reply::from_bytes(&reply.to_bytes()).unwrap() else {
+    let Reply::Refused { reason, .. } = Reply::from_bytes(&reply.to_bytes().unwrap()).unwrap()
+    else {
         panic!("expected a refusal")
     };
     assert!(!reason.contains('\u{202E}') && !reason.contains('\n'));

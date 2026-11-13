@@ -4,10 +4,12 @@
 //! from a value `sk` that the participants agree on (`use_qsk = true` in
 //! ZIP 2005 § 4.2.3 'Orchard Key Components'):
 //!
-//!   nk   = ToBase(PRF^expand_sk([0x07]))
-//!   qsk  = truncate_32(PRF^expand_sk([0x0C]))
-//!   qk   = BLAKE3.derive_key("Zcash ZIP 2005 qk-derivation v1", qsk)
-//!   rivk = ToScalar(PRF^expand_qk([0x0D] || ak || nk))
+//! ```text
+//! nk   = ToBase(PRF^expand_sk([0x07]))
+//! qsk  = truncate_32(PRF^expand_sk([0x0C]))
+//! qk   = BLAKE3.derive_key("Zcash ZIP 2005 qk-derivation v1", qsk)
+//! rivk = ToScalar(PRF^expand_qk([0x0D] || ak || nk))
+//! ```
 //!
 //! Notes received by these keys keep the quantum recovery path of ZIP 2005, as
 //! long as qsk is kept. zcash-sign instead builds the full viewing key with a
@@ -25,7 +27,9 @@ const QK_CONTEXT: &str = "Zcash ZIP 2005 qk-derivation v1";
 
 /// The group's viewing keys, plus the quantum spending key.
 pub struct GroupKeys {
+    /// The group's Orchard-style full viewing key.
     pub fvk: FullViewingKey,
+    /// `qk`, derived from `qsk` (ZIP 2005). Secret.
     pub qk: [u8; 32],
     /// Not used yet: the next step splits it 2-of-3 instead of keeping sk.
     #[allow(dead_code)]
@@ -138,6 +142,7 @@ pub fn address(fvk: &FullViewingKey, network: NetworkType) -> Result<String, Box
     encode_address(&fvk.address_at(0u32, Scope::External), network)
 }
 
+/// An Ironwood address as a unified address on `network`.
 pub fn encode_address(
     address: &orchard::Address,
     network: NetworkType,

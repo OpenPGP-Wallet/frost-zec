@@ -63,17 +63,37 @@ const EXPIRY_MARGIN_BLOCKS: u64 = 1_000;
 /// The total supply of ZEC in zatoshis: no honest amount can be larger.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
+/// What the co-signer shows before asking for approval.
 #[derive(Debug)]
 pub struct Report {
+    /// The transaction, line by line: spends, payments and their memos,
+    /// change, fee, lock time.
     pub lines: Vec<String>,
+    /// What the user must know before approving: the v6 pre-authorization
+    /// notice, a high fee.
     pub warnings: Vec<String>,
 }
 
+/// An amount in zatoshis, written in ZEC with eight decimals.
 pub fn zec(zatoshis: u64) -> String {
+    amount(zatoshis, NetworkType::Main)
+}
+
+/// The unit amounts are written in: testnet coins are TAZ, not ZEC.
+pub fn unit(network: NetworkType) -> &'static str {
+    match network {
+        NetworkType::Main => "ZEC",
+        NetworkType::Test | NetworkType::Regtest => "TAZ",
+    }
+}
+
+/// An amount in zatoshis, with eight decimals, in the unit of `network`.
+pub fn amount(zatoshis: u64, network: NetworkType) -> String {
     format!(
-        "{}.{:08} ZEC",
+        "{}.{:08} {}",
         zatoshis / 100_000_000,
-        zatoshis % 100_000_000
+        zatoshis % 100_000_000,
+        unit(network)
     )
 }
 
@@ -261,11 +281,24 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Verifies and describes a PCZT that spends from the group `fvk`.
+/// Verifies and describes a PCZT that spends from the group `fvk`, with this
+/// computer's clock.
 pub fn analyze(
     pczt: &Pczt,
     fvk: &FullViewingKey,
     network: NetworkType,
+) -> Result<Report, Box<dyn Error>> {
+    analyze_at(pczt, fvk, network, now())
+}
+
+/// [`analyze`] with the clock given, in Unix seconds: what bounds the expiry
+/// height. For tests and shared tamper cases, which fix the time they are
+/// checked at (spec § 8.2).
+pub fn analyze_at(
+    pczt: &Pczt,
+    fvk: &FullViewingKey,
+    network: NetworkType,
+    now: u64,
 ) -> Result<Report, Box<dyn Error>> {
     // Every part of the transaction is covered by the signature. A part this
     // co-signer does not decode could carry value away without being shown:
@@ -301,7 +334,7 @@ pub fn analyze(
         warnings.push(pre_authorization(
             *pczt.global().expiry_height(),
             network,
-            now(),
+            now,
         )?);
     }
     if let Some(lock_time) = pczt.global().fallback_lock_time().filter(|t| *t != 0) {
@@ -367,7 +400,10 @@ pub fn analyze(
             actions += 1;
             if spend_value > 0 {
                 valued_spends += 1;
-                lines.push(format!("spend {} from this group", zec(spend_value)));
+                lines.push(format!(
+                    "spend {} from this group",
+                    amount(spend_value, network)
+                ));
             }
             if output_value == 0 {
                 // A zero-value output is signed like any other. The builder's
@@ -390,7 +426,10 @@ pub fn analyze(
                              the user would not be shown"
                         )));
                     }
-                    lines.push("send 0 ZEC to this group's own address".into());
+                    lines.push(format!(
+                        "send 0 {} to this group's own address",
+                        unit(network)
+                    ));
                     lines.push(format!("    {}", describe_memo(&memo)));
                 }
             } else {
@@ -442,13 +481,16 @@ pub fn analyze(
                 match scope {
                     Some(Scope::Internal) => {
                         add(&mut change, output_value)?;
-                        lines.push(format!("change {} back to this group", zec(output_value)));
+                        lines.push(format!(
+                            "change {} back to this group",
+                            amount(output_value, network)
+                        ));
                     }
                     Some(Scope::External) => {
                         add(&mut change, output_value)?;
                         lines.push(format!(
                             "send {} to this group's own address",
-                            zec(output_value)
+                            amount(output_value, network)
                         ));
                     }
                     None => {
@@ -459,7 +501,10 @@ pub fn analyze(
                             &recipient,
                             network,
                         )?;
-                        lines.push(format!("PAY {} to {address}", zec(output_value)));
+                        lines.push(format!(
+                            "PAY {} to {address}",
+                            amount(output_value, network)
+                        ));
                         lines.push(format!("    {}", describe_memo(&memo)));
                     }
                 }
@@ -481,7 +526,7 @@ pub fn analyze(
         )
         .into());
     }
-    lines.push(format!("fee {}", zec(fee)));
+    lines.push(format!("fee {}", amount(fee, network)));
     // ZIP 317 charges per action, so a coordinator could pad the transaction
     // with zero-value actions and make a raised fee look like the honest fee
     // of a bigger transaction. The builder pads a bundle to two actions and no
@@ -502,13 +547,13 @@ pub fn analyze(
     if fee > max_fee {
         return Err(format!(
             "the fee ({}) is more than ZIP 317 asks for {needed} actions ({})",
-            zec(fee),
-            zec(max_fee)
+            amount(fee, network),
+            amount(max_fee, network)
         )
         .into());
     }
     if fee > HIGH_FEE {
-        warnings.push(format!("high fee: {}", zec(fee)));
+        warnings.push(format!("high fee: {}", amount(fee, network)));
     }
     if spent == 0 {
         return Err("the transaction spends nothing from this group".into());
@@ -814,6 +859,13 @@ mod tests {
         );
         // Regtest has no checkpoint: only "never expires" is refused there.
         assert!(pre_authorization(499_999_999, NetworkType::Regtest, now()).is_ok());
+    }
+
+    #[test]
+    fn amounts_are_in_the_networks_unit() {
+        assert_eq!(amount(400_000, NetworkType::Main), "0.00400000 ZEC");
+        assert_eq!(amount(123, NetworkType::Test), "0.00000123 TAZ");
+        assert_eq!(zec(100_000_000), "1.00000000 ZEC");
     }
 
     #[test]

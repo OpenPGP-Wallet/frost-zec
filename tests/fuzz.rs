@@ -13,12 +13,10 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use frost_zec::channel::{Initiator, Responder};
-use frost_zec::cosigning::{
-    Commitments, CoordinatorSession, CosignerSession, Member, Reply, Request,
-};
-use frost_zec::setup::{CoordinatorSetup, CosignerSetup, Round1, Round2};
+use frost_zec::cosigning::{self, CoordinatorSession, Member, Reply, Request};
+use frost_zec::setup::{CoordinatorSetup, CosignerSetup, Done, Round1, Round2};
 use frost_zec::wire::{self, Message, Reader, kind};
-use frost_zec::{backup, check, dkg, keys, pczt_io, signing};
+use frost_zec::{backup, check, dkg, keys, pczt_io, profiles, signing};
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
@@ -131,9 +129,8 @@ fn every_decoder_survives_mutated_input() {
         honest(&members[0].fvk, text_memo("rent")),
     ))
     .unwrap();
-    let (session, opening) = CosignerSession::open(&members[1], &mut sys);
-    let (_, request, _) = CoordinatorSession::request(&members[0], &pczt, &opening).unwrap();
-    let Ok(pending) = session.review(&request) else {
+    let (_, request, _) = CoordinatorSession::request(&members[0], &pczt, &mut sys).unwrap();
+    let Ok(pending) = cosigning::review(&members[1], &request) else {
         panic!("the honest request was refused");
     };
     let reply = pending.approve();
@@ -143,6 +140,28 @@ fn every_decoder_survives_mutated_input() {
         .unwrap()
         .encode()
         .unwrap();
+    let backup_words =
+        profiles::to_words(&backup::Backup::decode(&backup_text).unwrap()).to_string();
+    let backup_file = {
+        let ak = signing::group_ak(&members[0].public_key_package).unwrap();
+        let sk: [u8; 32] = rand::random();
+        let fvk = keys::derive(&sk, &ak).unwrap().fvk;
+        let member = backup::Backup::new(&members[0].key_package, 3, &sk)
+            .unwrap()
+            .encode()
+            .unwrap();
+        profiles::encrypt(
+            &profiles::Contents {
+                backup: zeroize::Zeroizing::new(member),
+                ufvk: keys::ufvk(&fvk, NetworkType::Main).unwrap(),
+                birthday: None,
+                label: None,
+            },
+            "fuzz passphrase",
+        )
+        .unwrap()
+    };
+    let backup_file_text = profiles::to_text(&backup_file);
     let request_bytes = request.to_bytes().unwrap();
     let ur_parts: Vec<String> = {
         let mut encoder = wire::encoder(&request_bytes, 100).unwrap();
@@ -168,9 +187,9 @@ fn every_decoder_survives_mutated_input() {
         ("round1-cosigner", s1.to_bytes().to_vec()),
         ("round2-cosigner", s2.to_bytes().to_vec()),
         ("round2-coordinator", c2.to_bytes().to_vec()),
-        ("commitments", opening.to_bytes().unwrap()),
+        ("done", Done { digest: [7; 32] }.to_bytes()),
         ("request", request_bytes),
-        ("reply", reply.to_bytes()),
+        ("reply", reply.to_bytes().unwrap()),
         ("pczt", pczt.clone()),
     ];
 
@@ -222,29 +241,29 @@ fn every_decoder_survives_mutated_input() {
                 }
             }
             3 => {
-                let _ = Commitments::from_bytes(&input);
+                let _ = Done::from_bytes(&input);
+                let _ = frost_zec::recovery::GroupInfo::from_bytes(&input);
                 let _ = Request::from_bytes(&input);
                 let _ = Reply::from_bytes(&input);
             }
             // A co-signer reviewing a malicious coordinator's request.
             4 => {
-                let (session, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
                 let mut forged = Request::from_bytes(&input).unwrap_or_else(|_| request.clone());
-                forged.session = opening.session;
                 if *name == "pczt" {
                     forged.pczt = input.clone();
                 }
-                let _ = session.review(&forged);
+                let _ = cosigning::review(&members[1], &forged);
             }
             // An honest coordinator taking a malicious co-signer's reply.
             5 => {
-                let (_, opening) = CosignerSession::open(&members[1], &mut UnwrapErr(SysRng));
                 if let Ok((coordinating, _, _)) =
-                    CoordinatorSession::request(&members[0], &pczt, &opening)
+                    CoordinatorSession::request(&members[0], &pczt, &mut UnwrapErr(SysRng))
                     && let Ok(mut forged) = Reply::from_bytes(&input)
                 {
-                    if let Reply::Shares { session, .. } = &mut forged {
-                        *session = opening.session;
+                    match &mut forged {
+                        Reply::Shares { session, .. } | Reply::Refused { session, .. } => {
+                            *session = coordinating.session();
+                        }
                     }
                     let _ = coordinating.finish(&forged);
                 }
@@ -256,9 +275,18 @@ fn every_decoder_survives_mutated_input() {
                     let _ = pczt_io::spends_to_sign(&pczt);
                 }
             }
+            // A member backup, and its profiles: words, a file's text form
+            // and header (decrypting would cost an Argon2 run per input).
             7 => {
                 let text = mutate(backup_text.as_bytes(), &mut local);
                 let _ = backup::Backup::decode(&String::from_utf8_lossy(&text));
+                let words = mutate(backup_words.as_bytes(), &mut local);
+                let _ = profiles::from_words(&String::from_utf8_lossy(&words));
+                let file_text = mutate(backup_file_text.as_bytes(), &mut local);
+                if let Ok(file) = profiles::from_text(&String::from_utf8_lossy(&file_text)) {
+                    let _ = profiles::file_cost(&file);
+                }
+                let _ = profiles::file_cost(&mutate(&backup_file, &mut local));
             }
             // A QR stream with some parts mutated.
             _ => {

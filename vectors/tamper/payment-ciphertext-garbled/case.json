@@ -1,0 +1,34 @@
+{
+  "accepted": {
+    "sha256": "d2fda026c53114bbf9918632051fab8901b9f6063debfb5c808fb1458b6331a3",
+    "sighash": "a44ac09cea588c0323dbc8dc59503aa2925fc7a4c2a9cd8dac6cf6095834a1cf"
+  },
+  "approved": {
+    "payments": [
+      {
+        "address": "u1evdt2sqv0hgjvmg9uhl50q7xlawxaehlvk7eldmwspz58w374kylvy0fm8mncqggldputmy5uztk384s6k7k9kkr9al5559n6cpfnkc5",
+        "amount": 400000,
+        "memo": "invoice 42"
+      }
+    ]
+  },
+  "changed": "one byte of the payment's note ciphertext flipped",
+  "class": [
+    "unreadable-output"
+  ],
+  "clock": 1794101577,
+  "description": "The payment's note commitment still matches, but its ciphertext does not decrypt: the recipient would never find the funds.",
+  "format": 1,
+  "group": {
+    "own_addresses": [
+      "u1u4zdvtcrjt4cnffw3shrx440754g0mhr4a7fenck686tfr6rdqy9wu5v39ydpgm4ut37qnlh9kpw9fsp8wcwyu2y2r5stjhj0qwfnmrq"
+    ],
+    "ufvk": "uview1pts2jac4k89kfspszysy9el720ftantyfghjurj0gnuksfzeksudh8wwdftfdlvn87wpwkzwv27unfh9s0mjh6g8w3m7zfx7yxclnqhck22kzz5x3l47ue39vy5d0896mgqyg2pgrsux694zxdthj0nr9yz5wnq86ec86qp6qljyk08udlq2vtcvjwq5e"
+  },
+  "height": 3550000,
+  "id": "payment-ciphertext-garbled",
+  "network": "main",
+  "refused": {
+    "sha256": "c2c1539ea08b21f49d714a8571629d70e4184f6f0a37350a2aea4d40c65fe80a"
+  }
+}

@@ -49,9 +49,12 @@ const PERSONAL_KEYS: &[u8; 16] = b"ZcashFROSTv0Keys";
 const PERSONAL_SAS: &[u8; 16] = b"ZcashFROSTv0SAS_";
 const AAD_PREFIX: &[u8] = b"ZcashFROSTv0";
 
+/// Size of a pairing id: the first 16 bytes of the pairing transcript hash.
 pub const PAIRING_ID_SIZE: usize = 16;
+/// Size of a sealed message's XChaCha20-Poly1305 nonce.
 pub const NONCE_SIZE: usize = 24;
 
+/// Why a pairing message or a sealed message was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelError {
     /// A pairing message has the wrong size or an unknown version.
@@ -90,7 +93,9 @@ impl Error for ChannelError {}
 /// Which side of the pairing a device is. The initiator shows the first QR code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
+    /// Sends pair-init and pair-confirm (the coordinator).
     Initiator,
+    /// Sends pair-response (the co-signer).
     Responder,
 }
 
@@ -113,6 +118,7 @@ impl Role {
 /// Message 1, initiator → responder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairInit {
+    /// Protocol version, [`VERSION`].
     pub version: u8,
     /// X-Wing encapsulation key, 1216 bytes.
     pub encapsulation_key: Vec<u8>,
@@ -123,16 +129,21 @@ pub struct PairInit {
 /// Message 2, responder → initiator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairResponse {
+    /// Protocol version, [`VERSION`].
     pub version: u8,
     /// X-Wing ciphertext, 1120 bytes.
     pub ciphertext: Vec<u8>,
+    /// The responder's random contribution to the code, `r_r`.
     pub r_responder: [u8; 32],
 }
 
 /// Message 3, initiator → responder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairConfirm {
+    /// Protocol version, [`VERSION`].
     pub version: u8,
+    /// The initiator's random contribution, `r_i`, which opens the commitment
+    /// of pair-init.
     pub r_initiator: [u8; 32],
 }
 
@@ -172,7 +183,9 @@ pub struct Pairing {
 /// A message sealed under a pairing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sealed {
+    /// Random nonce, never reused under the same key.
     pub nonce: [u8; NONCE_SIZE],
+    /// XChaCha20-Poly1305 ciphertext with its tag.
     pub ciphertext: Vec<u8>,
 }
 
@@ -398,16 +411,19 @@ impl PendingPairing {
         self.pairing.seal(kind, session, plaintext, rng)
     }
 
+    /// The id the pairing will have once confirmed.
     pub fn id(&self) -> [u8; PAIRING_ID_SIZE] {
         self.pairing.id
     }
 }
 
 impl Pairing {
+    /// The pairing id, carried in clear in every sealed envelope.
     pub fn id(&self) -> [u8; PAIRING_ID_SIZE] {
         self.id
     }
 
+    /// Which side of the pairing this device is.
     pub fn role(&self) -> Role {
         self.role
     }
@@ -503,6 +519,7 @@ impl Pairing {
         bytes
     }
 
+    /// A pairing stored with [`Pairing::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Pairing, ChannelError> {
         if bytes.len() != 2 + PAIRING_ID_SIZE + 64 || bytes[0] != VERSION {
             return Err(ChannelError::Malformed("stored pairing"));

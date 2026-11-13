@@ -20,13 +20,15 @@ use frost::{Identifier, VerifyingKey};
 use orchard::keys::{FullViewingKey, SpendingKey};
 use reddsa::frost::redpallas as frost;
 use zcash_protocol::consensus::NetworkType;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::keys;
 
+/// The human-readable part of a member backup string.
 pub const HRP: &str = "zkfrost";
 const VERSION: u8 = 1;
-const PAYLOAD_LEN: usize = 68;
+/// The size of a version 1 payload: version, identifier, t, n, share, `sk`.
+pub const PAYLOAD_LEN: usize = 68;
 
 /// How the group's nk and rivk come from sk and ak.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,10 +43,15 @@ pub enum Derivation {
 /// of its `Debug` output.
 #[derive(PartialEq, Eq)]
 pub struct Backup {
+    /// The member's identifier, 1 to `n`.
     pub id: u8,
+    /// The threshold, 2 to `n`.
     pub t: u8,
+    /// The group size.
     pub n: u8,
+    /// The member's signing share. Secret.
     pub share: [u8; 32],
+    /// The group's `sk`. Secret.
     pub sk: [u8; 32],
 }
 
@@ -88,32 +95,20 @@ impl Backup {
         })
     }
 
-    pub fn encode(&self) -> Result<String, Box<dyn Error>> {
-        let mut payload = Vec::with_capacity(PAYLOAD_LEN);
-        payload.extend_from_slice(&[VERSION, self.id, self.t, self.n]);
-        payload.extend_from_slice(&self.share);
-        payload.extend_from_slice(&self.sk);
-        Ok(bech32::encode::<Bech32m>(Hrp::parse(HRP)?, &payload)?)
+    /// The 68-byte payload the string encodes. Secret: wiped when dropped.
+    pub fn payload(&self) -> Zeroizing<[u8; PAYLOAD_LEN]> {
+        let mut payload = Zeroizing::new([0u8; PAYLOAD_LEN]);
+        payload[..4].copy_from_slice(&[VERSION, self.id, self.t, self.n]);
+        payload[4..36].copy_from_slice(&self.share);
+        payload[36..].copy_from_slice(&self.sk);
+        payload
     }
 
-    /// Rejects anything that is not a well-formed version 1 string: bad
-    /// Bech32m (checksum, mixed case, padding), another prefix, a wrong
-    /// length, an unknown version, an identifier outside 1..=n, or a threshold
-    /// outside 2..=n (FROST needs at least two signers).
-    pub fn decode(text: &str) -> Result<Backup, Box<dyn Error>> {
-        let checked = CheckedHrpstring::new::<Bech32m>(text.trim())
-            .map_err(|e| format!("not a valid backup string: {e}"))?;
-        if checked.hrp().to_lowercase() != HRP {
-            return Err("not a FROST member backup string".into());
-        }
-        // ZIP 173: the bits left over by the conversion to bytes must be at
-        // most 4 and all zero, so each payload has only one lowercase string.
-        checked
-            .validate_segwit_padding()
-            .map_err(|e| format!("not a valid backup string: {e}"))?;
-        let payload: Vec<u8> = checked.byte_iter().collect();
+    /// Reads a 68-byte payload, with the same checks as [`Backup::decode`]
+    /// once the Bech32m layer is removed.
+    pub fn from_payload(payload: &[u8]) -> Result<Backup, Box<dyn Error>> {
         // The version first, so that a later version is reported as such
-        // rather than as a string of the wrong length.
+        // rather than as a payload of the wrong length.
         if payload.first() != Some(&VERSION) {
             return Err(format!(
                 "backup string version {:?} is not supported",
@@ -140,17 +135,54 @@ impl Backup {
             sk: payload[36..].try_into()?,
         })
     }
+
+    /// The member backup string: Bech32m, lowercase. Secret.
+    pub fn encode(&self) -> Result<String, Box<dyn Error>> {
+        Ok(bech32::encode::<Bech32m>(
+            Hrp::parse(HRP)?,
+            self.payload().as_slice(),
+        )?)
+    }
+
+    /// Rejects anything that is not a well-formed version 1 string: bad
+    /// Bech32m (checksum, mixed case, padding), another prefix, a wrong
+    /// length, an unknown version, an identifier outside 1..=n, or a threshold
+    /// outside 2..=n (FROST needs at least two signers).
+    pub fn decode(text: &str) -> Result<Backup, Box<dyn Error>> {
+        let checked = CheckedHrpstring::new::<Bech32m>(text.trim())
+            .map_err(|e| format!("not a valid backup string: {e}"))?;
+        if checked.hrp().to_lowercase() != HRP {
+            return Err("not a FROST member backup string".into());
+        }
+        // ZIP 173: the bits left over by the conversion to bytes must be at
+        // most 4 and all zero, so each payload has only one lowercase string.
+        checked
+            .validate_segwit_padding()
+            .map_err(|e| format!("not a valid backup string: {e}"))?;
+        let payload: Zeroizing<Vec<u8>> = Zeroizing::new(checked.byte_iter().collect());
+        Backup::from_payload(&payload)
+    }
 }
 
 /// A member rebuilt from its string and the group's viewing key.
 pub struct Restored {
+    /// What the string holds.
     pub backup: Backup,
+    /// How the group derives its keys from `sk`.
     pub derivation: Derivation,
+    /// The member's key package, rebuilt from the share and the group key.
     pub key_package: KeyPackage,
+    /// The group's full viewing key.
     pub fvk: FullViewingKey,
+    /// The network of the viewing key.
     pub network: NetworkType,
 }
 
+/// Rebuilds a member from its backup string and the group's unified full
+/// viewing key. `sk` and the group key must give that viewing key, under ZIP
+/// 2005 or Zkool's older derivation. That proves the two go together, not
+/// that the share is the group's: [`check_member`] does, with the group's
+/// public key package.
 pub fn restore(text: &str, ufvk: &str) -> Result<Restored, Box<dyn Error>> {
     let backup = Backup::decode(text)?;
     if bool::from(SpendingKey::from_bytes(backup.sk).is_none()) {

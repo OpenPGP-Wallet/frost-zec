@@ -94,7 +94,7 @@ from the session directory once read, and the other files when the session
 ends. `cosign --yes` skips the human approval and exists only for automated
 tests.
 
-## The QR protocol (spec draft v0.1)
+## The QR protocol (spec draft v1.0, in progress)
 
 [`docs/spec.md`](docs/spec.md) specifies how two devices of one user share a
 FROST 2-of-3 account: pairing with a six-digit code, key generation, the
@@ -107,7 +107,8 @@ commands play either side, so the protocol can be tried without the app:
 cargo run -- qr setup --as coordinator --network test --state coord --via exchange
 cargo run -- qr setup --as cosigner    --network test --state cosign --via exchange
 
-# A signing session; the co-signer shows the payment and asks for approval
+# A signing session: the coordinator sends the request, the co-signer shows
+# the payment, asks for approval and answers once
 cargo run -- qr sign --as cosigner    --state cosign --via exchange
 cargo run -- qr sign --as coordinator --state coord --via exchange --pczt tx.pczt --out signed.pczt
 ```
@@ -125,6 +126,15 @@ The tests include a tamper suite ([tests/tamper.rs](tests/tamper.rs)) of
 PCZTs a dishonest coordinator could send, each refused or shown exactly as it
 will be signed, and mutation fuzzing of every decoder
 ([tests/fuzz.rs](tests/fuzz.rs)); CI runs both.
+
+### Shared tamper cases
+
+[vectors/tamper/](vectors/tamper/) holds tamper cases any co-signer can run:
+each is a refused PCZT, its accepted twin and what the user approved, with the
+refusal classes a signer may answer with ([classes.md](vectors/tamper/classes.md),
+format in spec § 8.2). The set is shared with other FROST signers for shielded
+ZEC (#7); new cases go to the listed maintainers privately first.
+[tests/tamper_vectors.rs](tests/tamper_vectors.rs) is this crate's runner.
 
 ## One vault, two implementations
 
@@ -165,6 +175,18 @@ Zkool's code. Both pass the same test vectors
 which [tools/zip-vectors](tools/zip-vectors) generates and checks against
 Zkool's own decoder and derivation matcher, copied unchanged.
 
+A string is kept in one of two profiles ([docs/backup-profiles.md](docs/backup-profiles.md),
+spec § 7.1): a file encrypted under a passphrase of 12 random words (Argon2id
+and XChaCha20-Poly1305, with the group's viewing key and birthday so a restore
+needs nothing else), or 51 words on paper:
+
+```bash
+cargo run -- backup protect --in member-3.txt --ufvk <viewing key> --birthday <height> --out member-3.zkfrost
+cargo run -- backup open --in member-3.zkfrost --out member-3.txt
+cargo run -- backup words --in member-3.txt          # 51 words to write down
+cargo run -- backup from-words --in words.txt --ufvk <viewing key> --out member-3.txt
+```
+
 ## Testnet and NU7
 
 Public testnet activated NU7 at height 4,465,026 (Zebra 7.0.0-rc.0) before
@@ -204,9 +226,12 @@ over the QR protocol's messages, mined on 2026-11-10:
 ## Next steps
 
 - A standalone crate on crates.io.
-- The backup's two profiles (a passphrase-encrypted file and a mnemonic), and
-  a recovery flow that sweeps the funds to a new FROST account.
-- Specification v1.0, revised after review.
+- Recovery in OpenPGP Wallet's screens. The protocol and the test co-signer
+  have it: `qr recover` after a lost coordinator, `qr sign-local` after a lost
+  co-signer, both sweeping the funds to a new account (spec § 7.2); and the
+  backup's two profiles, a passphrase-encrypted file and 51 words.
+- Specification v1.0, revised after review: in progress (two-message signing,
+  the setup acknowledgement and the shared tamper cases are in).
 - The member backup format as a ZIP, co-owned with aryaethn
   ([zcash/zips#1432](https://github.com/zcash/zips/pull/1432)).
 - Keep `qsk` split 2-of-3 across the devices instead of keeping `sk`, so that

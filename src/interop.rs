@@ -84,44 +84,62 @@ struct Round2Message {
 /// member's share and `sk`, unencrypted like the rest of this prototype.
 #[derive(Serialize, Deserialize)]
 pub struct Vault {
+    /// `main` or `test`.
     pub network: String,
+    /// The vault id, 16 bytes in hex, chosen by whoever creates the vault.
     pub vault_id: String,
+    /// The threshold.
     pub min_signers: u16,
+    /// The number of members.
     pub max_signers: u16,
+    /// This member's identity public key, in hex.
     pub identity: String,
+    /// This member's FROST identifier, in hex.
     pub identifier: String,
     /// Every member's identifier, this one included.
     pub members: Vec<String>,
+    /// This member's serialized key package, in hex. Secret.
     pub key_package: String,
+    /// The group's serialized public key package, in hex.
     pub public_key_package: String,
+    /// The group's `sk`, in hex. Secret.
     pub sk: String,
+    /// The group key `ak`, in hex.
     pub ak: String,
+    /// The group's unified full viewing key.
     pub ufvk: String,
+    /// The group's default unified address.
     pub address: String,
 }
 
 impl Vault {
+    /// Reads the seat that `interop dkg` wrote in `dir`.
     pub fn load(dir: &Path) -> Result<Vault, Box<dyn Error>> {
         let bytes = fs::read(dir.join(VAULT_FILE))
             .map_err(|_| format!("no vault in {}: run `interop dkg` first", dir.display()))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    /// This member's key package.
     pub fn key_package(&self) -> Result<KeyPackage, Box<dyn Error>> {
         Ok(KeyPackage::deserialize(&hex::decode(&self.key_package)?)?)
     }
 
+    /// The group's public key package.
     pub fn public_key_package(&self) -> Result<PublicKeyPackage, Box<dyn Error>> {
         Ok(PublicKeyPackage::deserialize(&hex::decode(
             &self.public_key_package,
         )?)?)
     }
 
+    /// The group's full viewing key, derived from `sk` and `ak` (ZIP 2005).
     pub fn fvk(&self) -> Result<FullViewingKey, Box<dyn Error>> {
         Ok(keys::derive(&bytes32(&self.sk)?, &bytes32(&self.ak)?)?.fvk)
     }
 }
 
+/// A member's FROST identifier in Zafe's key profile: derived from the vault id
+/// and the member's identity key, so that no one picks identifiers.
 pub fn member_identifier(
     identity: &[u8; 32],
     vault_id: &[u8; 16],
@@ -421,6 +439,7 @@ pub fn dkg(
     Ok(())
 }
 
+/// Prints a vault's public data: network, ids, members, viewing key, address.
 pub fn print_vault(vault: &Vault) {
     println!("network:      {}", vault.network);
     println!("vault id:     {}", vault.vault_id);
@@ -496,6 +515,7 @@ fn wait_for_paths(
     }
 }
 
+/// `main` or `test` as a network type.
 pub fn network_type(name: &str) -> Result<NetworkType, Box<dyn Error>> {
     match name {
         "main" => Ok(NetworkType::Main),

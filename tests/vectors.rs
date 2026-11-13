@@ -156,6 +156,7 @@ fn print_vectors() {
             "ufvk": keys::ufvk(&fvk, NetworkType::Main).unwrap(),
             "address": keys::address(&fvk, NetworkType::Main).unwrap(),
         },
+        "dkg_done": dkg_done_vector(ak, &keys::ufvk(&fvk, NetworkType::Main).unwrap()),
     });
     println!("{}", serde_json::to_string_pretty(&vectors).unwrap());
 }
@@ -314,5 +315,239 @@ fn vectors_match_the_spec() {
     assert_eq!(
         keys::address(&fvk, NetworkType::Main).unwrap(),
         k["address"]
+    );
+
+    // § 4.1: the acknowledgement's digest, recomputed from the formula.
+    let d = &v["dkg_done"];
+    let ak: [u8; 32] = arr(&d["ak"]);
+    let ufvk = d["ufvk"].as_str().unwrap();
+    let members: Vec<([u8; 32], [u8; 32])> = d["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (arr(&m["id"]), arr(&m["verifying_share"])))
+        .collect();
+    let t = d["t"].as_u64().unwrap() as u16;
+    let network = d["network"].as_u64().unwrap() as u8;
+    let mut input = vec![0u8, network];
+    input.extend_from_slice(&t.to_le_bytes());
+    input.extend_from_slice(&(members.len() as u16).to_le_bytes());
+    input.extend_from_slice(&ak);
+    for (id, share) in &members {
+        input.extend_from_slice(id);
+        input.extend_from_slice(share);
+    }
+    input.extend_from_slice(&(ufvk.len() as u32).to_le_bytes());
+    input.extend_from_slice(ufvk.as_bytes());
+    let digest = blake2b(b"ZcashFROSTv0Done", 32, &[&input]);
+    assert_eq!(hex::encode(&digest), d["digest"]);
+    assert_eq!(
+        setup::done_digest_for_vectors(network, t, &ak, &members, ufvk).to_vec(),
+        digest
+    );
+}
+
+/// The `dkg_done` vector: the group key and viewing key of `key_generation`,
+/// and fixed verifying shares (the digest does not check them).
+fn dkg_done_vector(ak: [u8; 32], ufvk: &str) -> Value {
+    let members: Vec<([u8; 32], [u8; 32])> = (1u16..=3)
+        .map(|i| {
+            let id: [u8; 32] = frost::Identifier::try_from(i)
+                .unwrap()
+                .serialize()
+                .try_into()
+                .unwrap();
+            (id, [0x40 + i as u8; 32])
+        })
+        .collect();
+    json!({
+        "network": 0,
+        "t": 2,
+        "ak": hex::encode(ak),
+        "members": members.iter().map(|(id, share)| json!({
+            "id": hex::encode(id),
+            "verifying_share": hex::encode(share),
+        })).collect::<Vec<_>>(),
+        "ufvk": ufvk,
+        "digest": hex::encode(setup::done_digest_for_vectors(0, 2, &ak, &members, ufvk)),
+    })
+}
+
+/// Prints the `dkg_done` vector for the `key_generation` vector already in the
+/// file:
+///
+///     cargo test --test vectors print_dkg_done_vector -- --ignored --nocapture
+#[test]
+#[ignore]
+fn print_dkg_done_vector() {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(FILE).unwrap()).unwrap();
+    let k = &v["key_generation"];
+    let vector = dkg_done_vector(arr(&k["ak"]), k["ufvk"].as_str().unwrap());
+    println!("{}", serde_json::to_string_pretty(&vector).unwrap());
+}
+
+// § 7.1: the two profiles of a member backup.
+
+const PROFILE_PASSPHRASE: &str =
+    "letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
+const PROFILE_SALT: [u8; 16] = [0x21; 16];
+const PROFILE_NONCE: [u8; 24] = [0x22; 24];
+
+/// Member 3 of group A of the member backup vectors, with its Mainnet viewing
+/// key: the string and the key the profile vectors start from.
+fn profile_inputs() -> (String, String) {
+    let v: Value = serde_json::from_str(
+        &std::fs::read_to_string("tests/fixtures/frost-member-backup-vectors.json").unwrap(),
+    )
+    .unwrap();
+    let group = &v["valid"][0];
+    let member = group["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == 3)
+        .unwrap();
+    (
+        member["string"].as_str().unwrap().to_string(),
+        group["ufvk_mainnet"].as_str().unwrap().to_string(),
+    )
+}
+
+fn profile_contents() -> frost_zec::profiles::Contents {
+    let (string, ufvk) = profile_inputs();
+    frost_zec::profiles::Contents {
+        backup: zeroize::Zeroizing::new(string),
+        ufvk,
+        birthday: Some(3_543_405),
+        label: Some("FROST 2-of-3".into()),
+    }
+}
+
+/// Prints the `profiles` vector:
+///
+///     cargo test --test vectors print_profile_vectors -- --ignored --nocapture
+#[test]
+#[ignore]
+fn print_profile_vectors() {
+    use frost_zec::profiles;
+    let contents = profile_contents();
+    let file = profiles::encrypt_with(
+        &contents,
+        PROFILE_PASSPHRASE,
+        profiles::DEFAULT_COST,
+        &PROFILE_SALT,
+        &PROFILE_NONCE,
+    )
+    .unwrap();
+    let backup = frost_zec::backup::Backup::decode(&contents.backup).unwrap();
+    let vector = json!({
+        "string": *contents.backup,
+        "ufvk": contents.ufvk,
+        "birthday": contents.birthday,
+        "label": contents.label,
+        "passphrase": PROFILE_PASSPHRASE,
+        "m_cost_kib": profiles::DEFAULT_COST.m_cost_kib,
+        "t_cost": profiles::DEFAULT_COST.t_cost,
+        "p_cost": profiles::DEFAULT_COST.p_cost,
+        "salt": hex::encode(PROFILE_SALT),
+        "nonce": hex::encode(PROFILE_NONCE),
+        "file": hex::encode(&file),
+        "words": *profiles::to_words(&backup),
+    });
+    println!("{}", serde_json::to_string_pretty(&vector).unwrap());
+}
+
+#[test]
+fn profile_vectors_match_the_spec() {
+    use argon2::{Algorithm, Argon2, Params, Version};
+    use frost_zec::profiles;
+    use sha2::{Digest, Sha256};
+
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(FILE).unwrap()).unwrap();
+    let p = &v["profiles"];
+    let file = h(p["file"].as_str().unwrap());
+    let passphrase = p["passphrase"].as_str().unwrap();
+
+    // Profile 1, recomputed: the header, then Argon2id and XChaCha20-Poly1305.
+    let (m, t, l) = (
+        p["m_cost_kib"].as_u64().unwrap() as u32,
+        p["t_cost"].as_u64().unwrap() as u32,
+        p["p_cost"].as_u64().unwrap() as u32,
+    );
+    let salt = h(p["salt"].as_str().unwrap());
+    let nonce: [u8; 24] = arr(&p["nonce"]);
+    let mut header = b"ZKFROSTB".to_vec();
+    header.push(1);
+    for value in [m, t, l] {
+        header.extend_from_slice(&value.to_le_bytes());
+    }
+    header.extend_from_slice(&salt);
+    header.extend_from_slice(&nonce);
+    assert_eq!(&file[..header.len()], header.as_slice());
+    let mut key = [0u8; 32];
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(m, t, l, Some(32)).unwrap(),
+    )
+    .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+    .unwrap();
+    let plaintext = XChaCha20Poly1305::new(&key.into())
+        .decrypt(
+            &XNonce::from(nonce),
+            Payload {
+                msg: &file[header.len()..],
+                aad: &header,
+            },
+        )
+        .unwrap();
+    let string = p["string"].as_str().unwrap();
+    assert!(
+        plaintext
+            .windows(string.len())
+            .any(|w| w == string.as_bytes())
+    );
+
+    // The implementation agrees, both ways.
+    let opened = profiles::decrypt(&file, passphrase).unwrap();
+    assert_eq!(*opened.backup, string);
+    assert_eq!(opened.ufvk, p["ufvk"]);
+    assert_eq!(opened.birthday.map(u64::from), p["birthday"].as_u64());
+    assert_eq!(opened.label.as_deref(), p["label"].as_str());
+    let again = profiles::encrypt_with(
+        &profile_contents(),
+        passphrase,
+        profiles::DEFAULT_COST,
+        &PROFILE_SALT,
+        &PROFILE_NONCE,
+    )
+    .unwrap();
+    assert_eq!(again, file);
+
+    // Profile 2, recomputed: the payload's 544 bits and the first 17 bits of
+    // its SHA-256, 11 bits a word.
+    let backup = frost_zec::backup::Backup::decode(string).unwrap();
+    let payload = backup.payload();
+    let digest = Sha256::digest(payload.as_slice());
+    let bits: Vec<u8> = payload
+        .iter()
+        .chain(digest.iter())
+        .flat_map(|byte| (0..8).rev().map(move |i| byte >> i & 1))
+        .take(68 * 8 + 17)
+        .collect();
+    let list = profiles::wordlist();
+    let words: Vec<&str> = bits
+        .chunks(11)
+        .map(|chunk| list[chunk.iter().fold(0usize, |n, b| n << 1 | usize::from(*b))])
+        .collect();
+    assert_eq!(words.len(), 51);
+    assert_eq!(words.join(" "), p["words"]);
+    assert_eq!(*profiles::to_words(&backup), words.join(" "));
+    assert_eq!(
+        profiles::from_words(&words.join(" "))
+            .unwrap()
+            .encode()
+            .unwrap(),
+        string
     );
 }

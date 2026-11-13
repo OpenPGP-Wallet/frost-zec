@@ -16,8 +16,11 @@ use zcash_primitives::transaction::sighash::{PrecomputedSighashData, SignableInp
 /// Errors raised inside the low-level signer callbacks.
 #[derive(Debug)]
 pub enum TxError {
+    /// The shielded bundle could not be parsed.
     Parse(OrchardParseError),
+    /// orchard refused a signature: it does not verify under the spend's `rk`.
     Apply(orchard::pczt::SignerError),
+    /// The PCZT is not one this code signs.
     Refused(String),
 }
 
@@ -41,14 +44,18 @@ impl Error for TxError {}
 
 /// A spend waiting for its authorization signature, in the Ironwood bundle.
 pub struct SpendToSign {
+    /// The action's position in the Ironwood bundle.
     pub index: usize,
+    /// The spend's randomizer, as the PCZT holds it.
     pub alpha: [u8; 32],
 }
 
+/// Reads a PCZT.
 pub fn parse(bytes: &[u8]) -> Result<Pczt, Box<dyn Error>> {
     Pczt::parse(bytes).map_err(|e| format!("not a valid PCZT: {e:?}").into())
 }
 
+/// Writes a PCZT.
 pub fn serialize(pczt: Pczt) -> Result<Vec<u8>, Box<dyn Error>> {
     pczt.serialize()
         .map_err(|e| format!("cannot serialize the PCZT: {e:?}").into())

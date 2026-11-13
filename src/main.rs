@@ -25,6 +25,15 @@
 //!   backup restore --in FILE --ufvk KEY [--save]
 //!                                             rebuild a member from its string and the group's
 //!                                             viewing key; --save writes it back into data/
+//!   backup protect --in FILE --ufvk KEY --out FILE [--birthday N] [--label TEXT] [--text]
+//!                                             profile 1: encrypt a backup string under a new
+//!                                             12-word passphrase (docs/backup-profiles.md)
+//!   backup open --in FILE [--passphrase-file FILE] [--out FILE]
+//!                                             open a backup file; --out writes the string
+//!   backup words --in FILE                    profile 2: a backup string as 51 words
+//!   backup from-words --in FILE [--ufvk KEY] [--out FILE]
+//!                                             the string from 51 words; with --ufvk, a single
+//!                                             miscopied word is looked for
 //!
 //! Run `coordinate` and `cosign` in two terminals: they talk through files in
 //! the --dir directory, which stand in for the encrypted QR codes of the real
@@ -35,7 +44,7 @@ mod qrcli;
 mod qrview;
 mod store;
 
-use frost_zec::{backup, check, dkg, interop, keys, pczt_io, session, signing};
+use frost_zec::{backup, check, dkg, interop, keys, pczt_io, profiles, session, signing};
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -83,10 +92,22 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("backup") if args.get(1).map(String::as_str) == Some("restore") => {
             backup_restore(&args[2..])
         }
+        Some("backup") if args.get(1).map(String::as_str) == Some("protect") => {
+            backup_protect(&args[2..])
+        }
+        Some("backup") if args.get(1).map(String::as_str) == Some("open") => {
+            backup_open(&args[2..])
+        }
+        Some("backup") if args.get(1).map(String::as_str) == Some("words") => {
+            backup_words(&args[2..])
+        }
+        Some("backup") if args.get(1).map(String::as_str) == Some("from-words") => {
+            backup_from_words(&args[2..])
+        }
         Some("qr") => qrcli::run(&args[1..]),
         _ => {
             eprintln!(
-                "usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg | backup export | backup restore | qr> [options]\nsee the comment at the top of src/main.rs for the options"
+                "usage: frost-zec <selftest | keygen | info | inspect | sign | coordinate | cosign | interop dkg | backup export | backup restore | backup protect | backup open | backup words | backup from-words | qr> [options]\nsee the comment at the top of src/main.rs for the options"
             );
             Ok(())
         }
@@ -94,7 +115,7 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
 }
 
 /// Every pair of participants produces a spend authorization signature that
-/// orchard accepts under rk = ak + [alpha]G, and a single participant cannot.
+/// orchard accepts under `rk = ak + [alpha]G`, and a single participant cannot.
 fn selftest() -> Result<(), Box<dyn Error>> {
     let (key_packages, public_key_package) = dkg::run(MAX_SIGNERS, MIN_SIGNERS)?;
     let ak = signing::group_ak(&public_key_package)?;
@@ -677,6 +698,190 @@ fn backup_restore(args: &[String]) -> Result<(), Box<dyn Error>> {
         );
     }
     Ok(())
+}
+
+/// Profile 1: encrypts a backup string, with the group's viewing key and
+/// birthday, under a new passphrase of 12 random words, shown once.
+fn backup_protect(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let path = option(args, "--in").ok_or("missing --in FILE (the backup string)")?;
+    let ufvk = option(args, "--ufvk")
+        .ok_or("missing --ufvk KEY (the group's unified full viewing key)")?;
+    let out = option(args, "--out").ok_or("missing --out FILE")?;
+    if Path::new(out).exists() {
+        return Err(format!("{out} exists already: choose another --out").into());
+    }
+    let birthday = option(args, "--birthday").map(str::parse).transpose()?;
+    let contents = profiles::Contents {
+        backup: zeroize::Zeroizing::new(fs::read_to_string(path)?.trim().to_string()),
+        ufvk: ufvk.to_string(),
+        birthday,
+        label: option(args, "--label").map(String::from),
+    };
+    let passphrase = profiles::generate_passphrase();
+    let file = profiles::encrypt(&contents, &passphrase)?;
+    if flag(args, "--text") {
+        fs::write(
+            out,
+            profiles::to_text(&file)
+                + "
+",
+        )?;
+    } else {
+        fs::write(out, &file)?;
+    }
+    println!("backup file written to {out}");
+    println!(
+        "passphrase (write it down now; it is shown only once):
+
+  {}
+",
+        *passphrase
+    );
+    println!("Keep the file and the passphrase apart. Then delete {path}: the file replaces it.");
+    Ok(())
+}
+
+/// The passphrase of a backup file: from --passphrase-file, or typed (it is
+/// shown as it is typed).
+fn read_passphrase(args: &[String]) -> Result<zeroize::Zeroizing<String>, Box<dyn Error>> {
+    if let Some(file) = option(args, "--passphrase-file") {
+        return Ok(zeroize::Zeroizing::new(
+            fs::read_to_string(file)?.trim().to_string(),
+        ));
+    }
+    print!("passphrase (shown as you type): ");
+    io::stdout().flush()?;
+    let mut line = zeroize::Zeroizing::new(String::new());
+    io::stdin().lock().read_line(&mut line)?;
+    Ok(zeroize::Zeroizing::new(line.trim().to_string()))
+}
+
+/// Opens a backup file (binary or text form) and says what it holds.
+fn backup_open(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let path = option(args, "--in").ok_or("missing --in FILE (the backup file)")?;
+    let bytes = fs::read(path)?;
+    let file = if bytes.starts_with(profiles::TEXT_PREFIX.as_bytes()) {
+        profiles::from_text(std::str::from_utf8(&bytes)?)?
+    } else {
+        bytes
+    };
+    profiles::file_cost(&file)?;
+    let passphrase = read_passphrase(args)?;
+    let contents = profiles::decrypt(&file, &passphrase)?;
+    let restored = backup::restore(&contents.backup, &contents.ufvk)?;
+    let b = &restored.backup;
+    println!(
+        "member {}, threshold {} of {}, network {:?}",
+        b.id, b.t, b.n, restored.network
+    );
+    println!("viewing key: {}", contents.ufvk);
+    match contents.birthday {
+        Some(height) => println!("birthday height: {height}"),
+        None => println!("birthday height: unknown (scan from Ironwood's activation)"),
+    }
+    if let Some(label) = &contents.label {
+        println!("label: {}", check::printable(label));
+    }
+    if let Some(out) = option(args, "--out") {
+        if Path::new(out).exists() {
+            return Err(format!("{out} exists already: choose another --out").into());
+        }
+        fs::write(
+            out,
+            format!(
+                "{}
+",
+                *contents.backup
+            ),
+        )?;
+        println!("backup string written to {out} (secret)");
+    }
+    Ok(())
+}
+
+/// Profile 2: a backup string as 51 words, numbered for copying.
+fn backup_words(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let path = option(args, "--in").ok_or("missing --in FILE (the backup string)")?;
+    let backup = backup::Backup::decode(&fs::read_to_string(path)?)?;
+    let words = profiles::to_words(&backup);
+    println!(
+        "the {} words of this member backup (secret):
+",
+        profiles::WORD_COUNT
+    );
+    for (i, word) in words.split_whitespace().enumerate() {
+        println!("  {:2}. {word}", i + 1);
+    }
+    println!(
+        "
+Restoring also needs the group's viewing key, which the words do not hold."
+    );
+    Ok(())
+}
+
+/// The backup string from its 51 words. With --ufvk, the restore is checked,
+/// and a single miscopied word is looked for when the checksum fails.
+fn backup_from_words(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let path = option(args, "--in").ok_or("missing --in FILE (the 51 words)")?;
+    let text = fs::read_to_string(path)?;
+    // Numbers and dots from a numbered copy are not words.
+    let words: String = text
+        .split_whitespace()
+        .filter(|w| !w.trim_end_matches('.').chars().all(|c| c.is_ascii_digit()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let backup = match (profiles::from_words(&words), option(args, "--ufvk")) {
+        (Ok(backup), _) => backup,
+        (Err(error), None) => return Err(error),
+        (Err(error), Some(ufvk)) => {
+            let corrections = profiles::correct_one_word(&words, ufvk)?;
+            match corrections.as_slice() {
+                [] => return Err(format!("{error}; no single word fixes it").into()),
+                [one] => {
+                    println!("one word was miscopied; the corrected words restore the member");
+                    profiles::from_words(one)?
+                }
+                many => {
+                    return Err(format!(
+                        "{error}; {} corrections of one word fit: check the words against the paper",
+                        many.len()
+                    )
+                    .into());
+                }
+            }
+        }
+    };
+    let text = backup.encode()?;
+    if let Some(ufvk) = option(args, "--ufvk") {
+        let restored = backup::restore(&text, ufvk)?;
+        println!(
+            "member {}, threshold {} of {}, network {:?}",
+            restored.backup.id, restored.backup.t, restored.backup.n, restored.network
+        );
+    }
+    match option(args, "--out") {
+        Some(out) if Path::new(out).exists() => {
+            Err(format!("{out} exists already: choose another --out").into())
+        }
+        Some(out) => {
+            fs::write(
+                out,
+                format!(
+                    "{text}
+"
+                ),
+            )?;
+            println!("backup string written to {out} (secret)");
+            Ok(())
+        }
+        None => {
+            println!(
+                "backup string (secret):
+{text}"
+            );
+            Ok(())
+        }
+    }
 }
 
 fn print_report(who: &str, report: &check::Report) {
