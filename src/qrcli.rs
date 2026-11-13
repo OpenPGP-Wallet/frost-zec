@@ -5,6 +5,7 @@
 //!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--yes]
 //!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR|qr|clipboard]
 //!   qr info [--state DIR]
+//!   qr camera-test [--seconds N] [--save DIR]
 //!
 //! With `--via qr`, every message is shown as an animated QR code and the
 //! answer is read with the webcam (build with `--features camera`). With
@@ -59,8 +60,50 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         Some("setup") => setup(&args[1..]),
         Some("sign") => sign(&args[1..]),
         Some("info") => info(&args[1..]),
-        _ => Err("usage: frost-zec qr <setup | sign | info> [options] (see src/qrcli.rs)".into()),
+        Some("camera-test") => camera_test(&args[1..]),
+        _ => Err(
+            "usage: frost-zec qr <setup | sign | info | camera-test> [options] (see src/qrcli.rs)"
+                .into(),
+        ),
     }
+}
+
+/// Shows what the webcam reads, for a camera that does not seem to read the
+/// codes: point it at a QR code the wallet shows (any step).
+#[cfg(feature = "camera")]
+fn camera_test(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let seconds = match option(args, "--seconds") {
+        Some(text) => text.parse().map_err(|_| "--seconds takes a number")?,
+        None => 20,
+    };
+    let save = option(args, "--save").map(PathBuf::from);
+    if let Some(dir) = &save {
+        fs::create_dir_all(dir)?;
+    }
+    println!("[camera test] {seconds} s: point the camera at a QR code shown by the wallet");
+    let started = Instant::now();
+    let report = frost_zec::camera::test(seconds, save.as_deref(), |text| {
+        let shown: String = text.chars().take(32).collect();
+        println!("  {:5.1} s  read {shown}…", started.elapsed().as_secs_f32());
+    })?;
+    println!(
+        "  camera: {} ({}x{}), {} frames in {seconds} s ({:.0} per second), a code read in {}",
+        report.camera,
+        report.width,
+        report.height,
+        report.frames,
+        report.frames as f32 / seconds as f32,
+        report.decoded
+    );
+    if let Some(dir) = save {
+        println!("  one frame per second saved in {}", dir.display());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "camera"))]
+fn camera_test(_: &[String]) -> Result<(), Box<dyn Error>> {
+    Err("this build cannot read QR codes: build with --features camera".into())
 }
 
 /// A member's seat: everything it needs to sign later.

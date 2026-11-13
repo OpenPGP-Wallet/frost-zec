@@ -49,16 +49,27 @@ image = { version = "0.25", optional = true, default-features = false, features 
 nokhwa = { version = "0.10", optional = true, features = ["input-native"] }
 qrcode = { version = "0.14", optional = true, default-features = false }
 rqrr = { version = "0.10.1", optional = true }
+# ZXing's QR reader, ported to Rust: it reads codes about half the size rqrr
+# needs in a webcam frame (examples/qr_bench.rs), and faster.
+rxing = { version = "0.9.4", optional = true, default-features = false, features = ["decoders", "encoding_rs", "qrcode"] }
 
 [features]
 default = ["cli"]
 cli = ["dep:qrcode", "dep:crossterm", "dep:arboard"]
-camera = ["dep:nokhwa", "dep:rqrr", "dep:image"]
+camera = ["dep:nokhwa", "dep:rqrr", "dep:rxing", "dep:image"]
 
 [[bin]]
 name = "frost-zec"
 path = "src/main.rs"
 required-features = ["cli"]
+
+[[example]]
+name = "qr_bench"
+required-features = ["camera"]
+
+[[example]]
+name = "frames_replay"
+required-features = ["camera"]
 
 [dev-dependencies]
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
