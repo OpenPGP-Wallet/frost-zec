@@ -255,7 +255,16 @@ fn the_builders_padding_is_not_shown() {
     tx.outputs.truncate(1);
     let shown = analyze(&build(&group(), tx)).unwrap().lines;
     assert_eq!(shown.len(), 4, "{shown:?}");
-    assert!(shown[1].starts_with("PAY 0.00990000 ZEC"), "{shown:?}");
+    // The builder shuffles the actions, so the payment's line may come before
+    // or after the spend's.
+    let pays = shown
+        .iter()
+        .filter(|line| line.starts_with("PAY 0.00990000 ZEC"));
+    assert_eq!(pays.count(), 1, "{shown:?}");
+    assert!(
+        !shown.iter().any(|line| line.contains("send 0 ZEC")),
+        "{shown:?}"
+    );
 }
 
 /// A zero-value note to the group itself moves nothing, but it is signed, so
