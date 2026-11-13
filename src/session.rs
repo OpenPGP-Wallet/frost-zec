@@ -151,8 +151,15 @@ fn reply_age(dir: &Path) -> Option<Duration> {
 
 fn reset_within(dir: &Path, window: Duration) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(dir)?;
+    // The deadline bounds the wait even for a reply whose timestamp is in the
+    // future and so never ages.
+    let deadline = Instant::now() + window;
     while let Some(age) = reply_age(dir).filter(|age| *age < window) {
-        thread::sleep(POLL.min(window - age));
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        thread::sleep(POLL.min(window - age).min(left));
     }
     for name in [COMMITMENTS, REQUEST, REPLY] {
         let file = path(dir, name);
@@ -298,6 +305,26 @@ mod tests {
         reset_within(&dir, Duration::from_secs(30)).unwrap();
         let collected = coordinator.join().unwrap();
         assert_eq!(collected.unwrap().kind, "sign-reply");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!reply.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A reply stamped in the future (a clock ahead, or a file carried from a
+    /// device whose clock runs fast) never ages: the wait must still end.
+    #[test]
+    fn a_reply_from_the_future_does_not_hold_the_session_forever() {
+        let dir = scratch("future-reply");
+        let reply = path(&dir, REPLY);
+        fs::write(&reply, b"{}").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&reply)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(3600))
+            .unwrap();
+        let started = Instant::now();
+        reset_within(&dir, Duration::from_millis(900)).unwrap();
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(!reply.exists());
         let _ = fs::remove_dir_all(dir);
