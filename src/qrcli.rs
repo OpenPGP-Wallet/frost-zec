@@ -2,6 +2,7 @@
 //! and a test coordinator.
 //!
 //!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR|qr|clipboard] [--yes]
+//!            [--backup-plain]   (co-signer: member 3 as a bare string, not an encrypted file)
 //!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--yes]
 //!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR|qr|clipboard]
 //!   qr done [--state DIR] [--via DIR|qr|clipboard]
@@ -711,19 +712,40 @@ fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn
             let (cosigner, backup) = cosigner_setup.finish(&Round2::from_bytes(&theirs2)?)?;
             let seat = Seat::new("cosigner", network_name, &pairing, &cosigner)?;
             seat.save(&state)?;
-            let backup_path = state.join("member3-backup.txt");
-            fs::write(&backup_path, backup.backup_string()?)?;
+            // Member 3 is encrypted at once (profile 1, spec § 7.1) under a
+            // new passphrase, with the group's viewing key; --backup-plain
+            // writes the bare string instead, for tests.
+            let plain = flag(args, "--backup-plain");
+            let (backup_path, passphrase) = if plain {
+                let path = state.join("member3-backup.txt");
+                fs::write(&path, backup.backup_string()?)?;
+                (path, None)
+            } else {
+                let passphrase = profiles::generate_passphrase();
+                let contents = profiles::Contents {
+                    backup: zeroize::Zeroizing::new(backup.backup_string()?),
+                    ufvk: cosigner.ufvk.clone(),
+                    birthday: None,
+                    label: Some("FROST 2-of-3, member 3".into()),
+                };
+                let path = state.join("member3-backup.zkfrost");
+                fs::write(&path, profiles::encrypt(&contents, &passphrase)?)?;
+                (path, Some(passphrase))
+            };
             // Member 3 leaves memory here; what was written is checked, not
             // what was in memory.
             drop(backup);
-            dkg_setup::check_backup(&fs::read_to_string(&backup_path)?, &cosigner).map_err(
-                |e| {
-                    format!(
-                        "the backup written to {} does not restore: {e}",
-                        backup_path.display()
-                    )
-                },
-            )?;
+            let written = match &passphrase {
+                None => zeroize::Zeroizing::new(fs::read_to_string(&backup_path)?),
+                Some(passphrase) => profiles::decrypt(&fs::read(&backup_path)?, passphrase)?.backup,
+            };
+            dkg_setup::check_backup(&written, &cosigner).map_err(|e| {
+                format!(
+                    "the backup written to {} does not restore: {e}",
+                    backup_path.display()
+                )
+            })?;
+            drop(written);
             carrier.send(
                 COSIGNER_DONE,
                 &[Message::seal(
@@ -735,11 +757,20 @@ fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn
                 )?],
             )?;
             print_seat(&seat);
-            println!(
-                "  member 3 (the backup) written to {} and checked: move it offline and \
-                 delete it here. It holds a share and sk, protect it like the seat.",
-                backup_path.display()
-            );
+            match &passphrase {
+                None => println!(
+                    "  member 3 (the backup) written to {} and checked: move it offline and \
+                     delete it here. It holds a share and sk, protect it like the seat.",
+                    backup_path.display()
+                ),
+                Some(passphrase) => println!(
+                    "  member 3 (the backup) written to {}, encrypted and checked. Its \
+                     passphrase, shown only now (write it down, and keep it apart from the \
+                     file):\n\n    {}\n\n  Move the file offline and delete it here.",
+                    backup_path.display(),
+                    **passphrase
+                ),
+            }
             if let Some(Recovery::Cosigner { old_state, mut old }) = recovery {
                 // The old account now answers the new coordinator only: the
                 // lost device's pairing is forgotten.

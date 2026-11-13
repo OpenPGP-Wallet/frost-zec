@@ -88,7 +88,12 @@ fn two_processes_pair_generate_keys_and_sign() {
     ]);
     let address = seat_field(Path::new(c), "address");
     assert_eq!(address, seat_field(Path::new(s), "address"));
-    assert!(Path::new(s).join("member3-backup.txt").exists());
+    // Member 3 is encrypted at once; no bare string is left.
+    assert!(Path::new(s).join("member3-backup.zkfrost").exists());
+    assert!(!Path::new(s).join("member3-backup.txt").exists());
+    let file = std::fs::read(Path::new(s).join("member3-backup.zkfrost")).unwrap();
+    assert!(file.starts_with(b"ZKFROSTB"));
+    assert!(!file.windows(8).any(|w| w == b"zkfrost1"));
 
     // The co-signer can show its acknowledgement again; a coordinator cannot.
     let ack = Path::new(via).join("6-cosigner-done.ur");
@@ -187,6 +192,7 @@ fn a_lost_coordinator_is_replaced_and_the_old_account_swept() {
             "--via",
             &via,
             "--yes",
+            "--backup-plain",
         ]),
     ]);
     let old_address = seat_field(Path::new(&c), "address");
@@ -336,6 +342,7 @@ fn a_lost_cosigner_is_replaced_by_member_3_on_the_coordinator() {
                 "--via",
                 via,
                 "--yes",
+                "--backup-plain",
             ]),
         ]);
     };

@@ -88,14 +88,15 @@ files" further down.
    Until then, the account's card says the setup is not finished, shows no
    address and cannot receive: without the co-signer's share, the account
    could never sign, and coins sent to it would be lost.
-9. **Co-signer's folder:** the co-signer has written
-   `my-cosigner/member3-backup.txt`, the backup member. Copy it to an offline
-   medium (a USB stick you keep apart) and delete it from the computer. With
-   it and the account's viewing key, member 3 can be rebuilt in any wallet
-   that implements the member backup string (zcash/zips#1432). The rest of
+9. **Co-signer:** it has written `my-cosigner/member3-backup.zkfrost`, the
+   backup member, encrypted under a passphrase of 12 words it shows once.
+   Write the passphrase down and keep it apart from the file. Copy the file to
+   an offline medium (a USB stick you keep apart) and delete it from the
+   computer. The file holds the account's viewing key too, so member 3 can be
+   restored without the other devices (`frost-zec backup open`; spec § 7.1),
+   and `frost-zec backup words` gives it as 51 words for paper. The rest of
    `my-cosigner` holds member 2 unencrypted (this test co-signer does not
-   encrypt its state): until the backup string is gone from the computer, that
-   computer alone holds two members of three.
+   encrypt its own state).
 
 ## 2. Fund it
 

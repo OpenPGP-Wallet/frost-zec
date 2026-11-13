@@ -230,8 +230,8 @@ On a mismatch it MUST NOT use the account. Once `D` matches, both devices show
 the address.
 
 A device cannot prove that the user moved the backup string off it. The test
-co-signer writes the string to a file next to its state and asks the user to
-move it offline.
+co-signer writes it next to its state as a profile 1 file (§ 7.1), encrypted
+under a passphrase it shows once, and asks the user to move it offline.
 
 ## 5. Signing session
 
