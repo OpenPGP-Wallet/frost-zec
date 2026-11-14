@@ -465,6 +465,13 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let dir = PathBuf::from(option(args, "--dir").unwrap_or(SESSION_DIR));
     let my_id = seat.id();
 
+    if session::reply_pending(&dir) {
+        println!(
+            "[{}] waiting for the coordinator to collect the last reply in {}...",
+            seat.name,
+            session::path(&dir, session::REPLY).display()
+        );
+    }
     session::reset(&dir)?;
     let session_id = hex::encode(rand::random::<[u8; 8]>());
     let mut my_nonces = Vec::new();

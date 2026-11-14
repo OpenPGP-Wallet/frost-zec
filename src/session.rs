@@ -122,9 +122,45 @@ impl Drop for Cleanup<'_> {
     }
 }
 
+/// How long a reply may wait for the coordinator to collect it before the
+/// next session clears it.
+pub const COLLECT: Duration = Duration::from_secs(120);
+
 /// Removes the messages of an earlier session from `dir`.
+///
+/// A reply written within `COLLECT` may still be on its way: the coordinator
+/// removes it once read. A session started straight after the last one (a
+/// script running `cosign` in a loop) waits for that, up to `COLLECT`, instead
+/// of deleting the reply before the coordinator has it. An older reply is
+/// stale and goes at once, so a reply carried by hand never holds up a new
+/// session for long.
 pub fn reset(dir: &Path) -> Result<(), Box<dyn Error>> {
+    reset_within(dir, COLLECT)
+}
+
+/// Whether `dir` holds a reply younger than `COLLECT` that the coordinator
+/// may not have collected yet.
+pub fn reply_pending(dir: &Path) -> bool {
+    reply_age(dir).is_some_and(|age| age < COLLECT)
+}
+
+fn reply_age(dir: &Path) -> Option<Duration> {
+    let modified = fs::metadata(path(dir, REPLY)).ok()?.modified().ok()?;
+    Some(modified.elapsed().unwrap_or_default())
+}
+
+fn reset_within(dir: &Path, window: Duration) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(dir)?;
+    // The deadline bounds the wait even for a reply whose timestamp is in the
+    // future and so never ages.
+    let deadline = Instant::now() + window;
+    while let Some(age) = reply_age(dir).filter(|age| *age < window) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        thread::sleep(POLL.min(window - age).min(left));
+    }
     for name in [COMMITMENTS, REQUEST, REPLY] {
         let file = path(dir, name);
         if file.exists() {
@@ -246,6 +282,87 @@ mod tests {
             writer.join().unwrap();
             let _ = fs::remove_dir_all(dir);
         }
+    }
+
+    /// A co-signer started straight after the last session (a script running
+    /// `cosign` in a loop) must not delete the reply before the coordinator,
+    /// which removes it once read, has collected it.
+    #[test]
+    fn a_fresh_reply_is_left_for_the_coordinator() {
+        let dir = scratch("fresh-reply");
+        let reply = path(&dir, REPLY);
+        fs::write(&reply, br#"{"kind": "sign-reply"}"#).unwrap();
+        let coordinator = {
+            let reply = reply.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(800));
+                let message: Result<Message, _> = wait_json(&reply, Instant::now());
+                let _ = fs::remove_file(&reply);
+                message.map_err(|e| e.to_string())
+            })
+        };
+        let started = Instant::now();
+        reset_within(&dir, Duration::from_secs(30)).unwrap();
+        let collected = coordinator.join().unwrap();
+        assert_eq!(collected.unwrap().kind, "sign-reply");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!reply.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A reply stamped in the future (a clock ahead, or a file carried from a
+    /// device whose clock runs fast) never ages: the wait must still end.
+    #[test]
+    fn a_reply_from_the_future_does_not_hold_the_session_forever() {
+        let dir = scratch("future-reply");
+        let reply = path(&dir, REPLY);
+        fs::write(&reply, b"{}").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&reply)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(3600))
+            .unwrap();
+        let started = Instant::now();
+        reset_within(&dir, Duration::from_millis(900)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!reply.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A reply nobody collects (carried by hand, or the coordinator gone) is
+    /// removed once the window has passed, so the next session still starts.
+    #[test]
+    fn an_uncollected_reply_is_removed_after_the_window() {
+        let dir = scratch("uncollected-reply");
+        let reply = path(&dir, REPLY);
+        fs::write(&reply, b"{}").unwrap();
+        let started = Instant::now();
+        reset_within(&dir, Duration::from_millis(900)).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(600));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!reply.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A reply from long ago is stale: it is removed at once, with no wait.
+    #[test]
+    fn a_stale_reply_is_removed_at_once() {
+        let dir = scratch("stale-reply");
+        let reply = path(&dir, REPLY);
+        fs::write(&reply, b"{}").unwrap();
+        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&reply)
+            .unwrap()
+            .set_modified(an_hour_ago)
+            .unwrap();
+        let started = Instant::now();
+        reset_within(&dir, Duration::from_secs(120)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!reply.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// A file that stays wrong is refused once it has settled, not after the
