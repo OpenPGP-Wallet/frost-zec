@@ -63,7 +63,10 @@ const EXPIRY_MARGIN_BLOCKS: u64 = 1_000;
 /// The total supply of ZEC in zatoshis: no honest amount can be larger.
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
-/// What the co-signer shows before asking for approval.
+/// What the co-signer shows before asking for approval, and the same facts for
+/// a program. `lines` and `warnings` are shown to the person who approves; the
+/// other fields carry the same facts for an automated signer, such as a
+/// spending policy, so it never has to parse text.
 #[derive(Debug)]
 pub struct Report {
     /// The transaction, line by line: spends, payments and their memos,
@@ -72,6 +75,29 @@ pub struct Report {
     /// What the user must know before approving: the v6 pre-authorization
     /// notice, a high fee.
     pub warnings: Vec<String>,
+    /// Every output that leaves the group with value, in action order.
+    pub payments: Vec<Payment>,
+    /// The value of the group's notes this transaction spends.
+    pub spent_zat: u64,
+    /// The value that comes back to the group: change, and sends to its own
+    /// addresses.
+    pub change_zat: u64,
+    /// The fee the transaction pays, in zatoshis.
+    pub fee_zat: u64,
+    /// The height after which the transaction can no longer be mined.
+    pub expiry_height: u32,
+}
+
+/// One payment leaving the group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Payment {
+    /// The receiver that is paid, encoded on its own as a unified address. It
+    /// is not the address the PCZT names for display: that one is checked to
+    /// hold this receiver, but its other receivers are not checked against
+    /// anything, so a program that compares addresses must use this one.
+    pub address: String,
+    /// The value paid to that receiver, in zatoshis.
+    pub zat: u64,
 }
 
 /// An amount in zatoshis, written in ZEC with eight decimals.
@@ -324,6 +350,7 @@ pub fn analyze_at(
     let mut change = 0u64;
     let mut value_balance = None;
     let mut randomizers = BTreeSet::new();
+    let mut payments = Vec::new();
     // What bounds the fee: how many actions the transaction has, and how many
     // it needs to move its value.
     let mut actions = 0usize;
@@ -506,6 +533,11 @@ pub fn analyze_at(
                             amount(output_value, network)
                         ));
                         lines.push(format!("    {}", describe_memo(&memo)));
+                        payments.push(Payment {
+                            address: keys::encode_address(&recipient, network)
+                                .map_err(|e| TxError::Refused(e.to_string()))?,
+                            zat: output_value,
+                        });
                     }
                 }
             }
@@ -558,7 +590,15 @@ pub fn analyze_at(
     if spent == 0 {
         return Err("the transaction spends nothing from this group".into());
     }
-    Ok(Report { lines, warnings })
+    Ok(Report {
+        lines,
+        warnings,
+        payments,
+        spent_zat: spent,
+        change_zat: change,
+        fee_zat: fee,
+        expiry_height: *pczt.global().expiry_height(),
+    })
 }
 
 /// Text from a transaction or from another device, made safe to show:
