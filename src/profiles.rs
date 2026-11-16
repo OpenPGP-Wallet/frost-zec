@@ -67,12 +67,12 @@ pub const DEFAULT_COST: Cost = Cost {
     t_cost: 3,
     p_cost: 1,
 };
-/// The most a reader accepts, so that a file cannot exhaust the device: 1 GiB,
-/// 16 passes, 16 lanes.
+/// The most a reader accepts, so that a file cannot exhaust the device, a
+/// phone included: 256 MiB, 8 passes, 4 lanes.
 pub const MAX_COST: Cost = Cost {
-    m_cost_kib: 1024 * 1024,
-    t_cost: 16,
-    p_cost: 16,
+    m_cost_kib: 256 * 1024,
+    t_cost: 8,
+    p_cost: 4,
 };
 
 /// What a backup file holds.
@@ -223,24 +223,57 @@ pub fn file_cost(file: &[u8]) -> Result<Cost, Box<dyn Error>> {
     Ok(cost)
 }
 
-/// Decrypts a backup file, then checks that its contents go together.
-pub fn decrypt(file: &[u8], passphrase: &str) -> Result<Contents, Box<dyn Error>> {
-    let cost = file_cost(file)?;
+/// The passphrase as [`generate_passphrase`] writes it: words in lowercase,
+/// one space apart, nothing around them. A passphrase copied with a stray
+/// space, a line break or capitals then still opens its file.
+pub fn normalize_passphrase(passphrase: &str) -> Zeroizing<String> {
+    Zeroizing::new(
+        passphrase
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// Opens the ciphertext of a file whose header passed [`file_cost`]; `None`
+/// when the passphrase does not fit.
+fn open(
+    file: &[u8],
+    passphrase: &str,
+    cost: Cost,
+) -> Result<Option<Zeroizing<Vec<u8>>>, Box<dyn Error>> {
     let header = &file[..HEADER_LEN];
     let salt = &file[21..21 + SALT_LEN];
     let nonce: [u8; NONCE_LEN] = file[21 + SALT_LEN..HEADER_LEN].try_into()?;
     let key = key(passphrase, salt, cost)?;
-    let plaintext = Zeroizing::new(
-        XChaCha20Poly1305::new(&(*key).into())
-            .decrypt(
-                &XNonce::from(nonce),
-                Payload {
-                    msg: &file[HEADER_LEN..],
-                    aad: header,
-                },
-            )
-            .map_err(|_| "wrong passphrase, or a damaged backup file")?,
-    );
+    Ok(XChaCha20Poly1305::new(&(*key).into())
+        .decrypt(
+            &XNonce::from(nonce),
+            Payload {
+                msg: &file[HEADER_LEN..],
+                aad: header,
+            },
+        )
+        .ok()
+        .map(Zeroizing::new))
+}
+
+/// Decrypts a backup file, then checks that its contents go together. The
+/// passphrase is tried as typed, then, when it differs, in the form
+/// [`normalize_passphrase`] gives: a generated passphrase pasted with a stray
+/// space or in capitals still opens the file, and a passphrase the user chose
+/// keeps working exactly as it was set.
+pub fn decrypt(file: &[u8], passphrase: &str) -> Result<Contents, Box<dyn Error>> {
+    let cost = file_cost(file)?;
+    let mut opened = open(file, passphrase, cost)?;
+    if opened.is_none() {
+        let normalized = normalize_passphrase(passphrase);
+        if !normalized.is_empty() && normalized.as_str() != passphrase {
+            opened = open(file, &normalized, cost)?;
+        }
+    }
+    let plaintext = opened.ok_or("wrong passphrase, or a damaged backup file")?;
     let wire: ContentsWire = minicbor::decode(&plaintext)
         .map_err(|e| format!("the backup file's contents are not readable: {e}"))?;
     let contents = Contents {
@@ -381,13 +414,37 @@ pub fn from_words(text: &str) -> Result<Backup, Box<dyn Error>> {
     from_indices(&indices(text)?)
 }
 
+/// The positions, from 0, of the words that hold bits of `sk` only (payload
+/// bits 288 to 543). A correction there is vouched for by the group's viewing
+/// key, which `sk` must give.
+pub const SK_WORDS: std::ops::RangeInclusive<usize> = 27..=48;
+
+/// One candidate of [`correct_one_word_at`].
+pub struct Correction {
+    /// The position of the corrected word, from 0.
+    pub position: usize,
+    /// The corrected word.
+    pub word: &'static str,
+    /// All the words, corrected. Secret.
+    pub words: Zeroizing<String>,
+}
+
+impl Correction {
+    /// Whether the viewing key vouches for this correction: the corrected word
+    /// holds bits of `sk` only. Anywhere else only the 17-bit checksum does,
+    /// and a second miscopied word can then let a wrong correction through, so
+    /// the user has to check that word against the paper.
+    pub fn checked_by_viewing_key(&self) -> bool {
+        SK_WORDS.contains(&self.position)
+    }
+}
+
 /// For words whose checksum fails, the corrections of a single word that pass
-/// the checksum and restore against the group's viewing key `ufvk`, as word
-/// lists. A miscopied word in the `sk` part is found by the viewing key alone;
-/// one in the signing share part only by the checksum, so more than one
-/// candidate can come back: the right one is the one whose member matches the
-/// group's public key package ([`backup::check_member`]).
-pub fn correct_one_word(text: &str, ufvk: &str) -> Result<Vec<Zeroizing<String>>, Box<dyn Error>> {
+/// the checksum and restore against the group's viewing key `ufvk`. A
+/// miscopied word in the `sk` part is found by the viewing key alone; one
+/// elsewhere only by the checksum, so a candidate there may be wrong when two
+/// words were miscopied (see [`Correction::checked_by_viewing_key`]).
+pub fn correct_one_word_at(text: &str, ufvk: &str) -> Result<Vec<Correction>, Box<dyn Error>> {
     let original = indices(text)?;
     let list = wordlist();
     let mut found = Vec::new();
@@ -401,18 +458,30 @@ pub fn correct_one_word(text: &str, ufvk: &str) -> Result<Vec<Zeroizing<String>>
             if let Ok(backup) = from_indices(&candidate)
                 && backup::restore(&backup.encode()?, ufvk).is_ok()
             {
-                found.push(Zeroizing::new(
-                    candidate
-                        .iter()
-                        .map(|i| list[usize::from(*i)])
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                ));
+                found.push(Correction {
+                    position,
+                    word: list[usize::from(replacement)],
+                    words: Zeroizing::new(
+                        candidate
+                            .iter()
+                            .map(|i| list[usize::from(*i)])
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                });
             }
         }
         candidate[position] = original[position];
     }
     Ok(found)
+}
+
+/// [`correct_one_word_at`], as word lists only.
+pub fn correct_one_word(text: &str, ufvk: &str) -> Result<Vec<Zeroizing<String>>, Box<dyn Error>> {
+    Ok(correct_one_word_at(text, ufvk)?
+        .into_iter()
+        .map(|c| c.words)
+        .collect())
 }
 
 /// Checks that the words of a member backup, with the group's viewing key,
@@ -494,13 +563,89 @@ mod tests {
             label: None,
         };
         let file = encrypt(&contents, "a passphrase").unwrap();
-        for (at, value) in [(9, 1024u32), (13, 1), (9, 2 * 1024 * 1024), (13, 1000)] {
+        for (at, value) in [
+            (9, 1024u32),
+            (13, 1),
+            (9, 2 * 1024 * 1024),
+            (13, 1000),
+            // Above 256 MiB, 8 passes or 4 lanes, even though it is no
+            // weaker than the default.
+            (9, 512 * 1024),
+            (13, 9),
+            (17, 5),
+        ] {
             let mut changed = file.clone();
             changed[at..at + 4].copy_from_slice(&value.to_le_bytes());
             let refused = file_cost(&changed).unwrap_err().to_string();
             assert!(refused.contains("work"), "{refused}");
         }
         assert!(file_cost(b"ZKFROSTA").is_err());
+    }
+
+    #[test]
+    fn a_generated_passphrase_survives_stray_spaces_and_capitals() {
+        let (_, text, ufvk) = member();
+        let contents = Contents {
+            backup: Zeroizing::new(text),
+            ufvk,
+            birthday: None,
+            label: None,
+        };
+        let passphrase = generate_passphrase();
+        let file = encrypt(&contents, &passphrase).unwrap();
+        for typed in [
+            format!("{} ", *passphrase),
+            format!("{}\n", *passphrase),
+            format!("\t{}", *passphrase),
+            passphrase.replace(' ', "  "),
+            passphrase.replace(' ', "\n"),
+            passphrase.to_uppercase(),
+        ] {
+            assert!(decrypt(&file, &typed).is_ok(), "{typed:?}");
+        }
+        // A wrong word is still refused, normalized or not.
+        let wrong = passphrase.replacen(passphrase.split(' ').next().unwrap(), "zoo", 1);
+        assert!(decrypt(&file, &wrong).is_err());
+        assert!(decrypt(&file, "   ").is_err());
+
+        // A passphrase the user chose works exactly as set, capitals included.
+        let chosen = "Correct Horse  Battery Staple";
+        let file = encrypt(&contents, chosen).unwrap();
+        assert!(decrypt(&file, chosen).is_ok());
+    }
+
+    #[test]
+    fn sk_words_hold_sk_bits_only() {
+        // sk is payload bytes 36..68, bits 288 to 543.
+        for position in 0..WORD_COUNT {
+            let (first, last) = (position * 11, position * 11 + 10);
+            let inside = first >= 36 * 8 && last < PAYLOAD_LEN * 8;
+            assert_eq!(SK_WORDS.contains(&position), inside, "word {position}");
+        }
+    }
+
+    #[test]
+    fn only_a_correction_in_the_sk_words_is_vouched_for() {
+        let (backup, _, ufvk) = member();
+        let words = to_words(&backup);
+        let list: Vec<&str> = words.split_whitespace().collect();
+        let miscopy = |at: usize| {
+            let mut changed = list.clone();
+            changed[at] = if list[at] == "zoo" { "abandon" } else { "zoo" };
+            changed.join(" ")
+        };
+        // In the sk part, the viewing key finds the word: one candidate,
+        // vouched for.
+        let corrections = correct_one_word_at(&miscopy(40), &ufvk).unwrap();
+        assert!(
+            corrections
+                .iter()
+                .any(|c| c.position == 40 && c.checked_by_viewing_key() && *c.words == *words)
+        );
+        // In the signing share, only the checksum finds it: never vouched for.
+        let corrections = correct_one_word_at(&miscopy(10), &ufvk).unwrap();
+        assert!(corrections.iter().any(|c| *c.words == *words));
+        assert!(corrections.iter().all(|c| !c.checked_by_viewing_key()));
     }
 
     #[test]
