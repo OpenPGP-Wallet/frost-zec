@@ -1,7 +1,8 @@
 # FROST co-signing for shielded ZEC: QR protocol, signer checks and backups
 
-Draft v1.0, work in progress (ZCG grant #490: v0.1 was Milestone 1, v1.0 is
-Milestone 2). The changes since v0.1 are listed in § 10. Not audited: use small
+Draft v1.1, work in progress (ZCG grant #490: v0.1 was Milestone 1, v1.0 is
+Milestone 2, v1.1 adds the fixes of its security self-audit). The changes
+since v0.1 are listed in § 10. Not audited: use small
 test amounts only.
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be read as in RFC 2119.
@@ -449,9 +450,9 @@ with the costs of the header; the ciphertext is XChaCha20-Poly1305 under that
 key and the nonce, with the whole header as associated data, so a changed cost
 or salt fails decryption. Files are written with 64 MiB, 3 passes and 1 lane.
 A reader MUST refuse lower costs, so that a forged file cannot pass for a
-strong one, and SHOULD refuse more than 1 GiB, 16 passes or 16 lanes, so that a
-file cannot exhaust the device; it checks the costs before any work. The
-plaintext is a CBOR map:
+strong one, and SHOULD refuse more than 256 MiB, 8 passes or 4 lanes, so that a
+file cannot exhaust the device, a phone included; it checks the costs before
+any work. The plaintext is a CBOR map:
 
 | Key | Field | |
 |---|---|---|
@@ -465,7 +466,11 @@ viewing key, and a reader MUST check it after decrypting. The file never holds
 nonces or pairing keys: a restored member pairs anew (§ 3.3). Its text form,
 for password managers, is `zkfrost-file-1:` and the bytes in unpadded
 base64url. The passphrase SHOULD have at least 12 words; the reference wallet
-and the test co-signer generate 12 random words of the BIP-39 English list.
+and the test co-signer generate 12 random words of the BIP-39 English list,
+lowercase and one space apart. When the passphrase as typed fails, a reader
+SHOULD try it once more with its words lowercased and one space apart, so that
+a generated passphrase copied with a stray space, a line break or capitals
+still opens its file.
 
 **Profile 2, 51 words**, for users who want paper: the 68-byte payload and the
 first 17 bits of its SHA-256, 561 bits written as 51 words of the BIP-39
@@ -477,7 +482,11 @@ recovery (§ 7.2) or from a profile 1 file. With the viewing key, a single
 miscopied word is found by trying every word at every position: a candidate
 must pass the checksum and restore against the viewing key. A word miscopied
 in the signing share is found by the checksum alone, so more than one candidate
-can remain; the group's public key package then tells them apart.
+can remain; the group's public key package then tells them apart. Only a
+correction of a word that holds bits of `sk` alone (words 28 to 49) is vouched
+for by the viewing key: with two words miscopied, the checksum can let a wrong
+correction elsewhere through, so a wallet MUST NOT apply such a correction
+without the user checking that word against the paper.
 
 ### 7.2 Recovery
 
@@ -529,7 +538,9 @@ Once the new account is acknowledged (§ 4.1):
   § 5) takes several transactions;
 - each sweep is an ordinary signing session (§ 5) between the restored member
   3 and the co-signer's member 2, and the co-signer checks it as any other
-  (§ 6);
+  (§ 6). The co-signer SHOULD keep the new account's address with its old
+  member and say, before the user approves, whether each payment goes there,
+  so that a coordinator sending the old funds elsewhere stands out;
 - once the sweep is mined, the new coordinator deletes the restored member 3.
 
 **When the co-signer is lost**, the coordinator restores member 3 the same
@@ -655,3 +666,14 @@ Reviewed by Daniel Gorgonha (DeegaLabs) on the forum thread of grant #490.
 - Amounts are shown in the unit of the group's network: TAZ on testnet.
 - The two backup profiles, a passphrase-encrypted file and 51 words (§ 7.1).
 - Recovery after a lost device, by sweeping to a new account (§ 7.2).
+
+v1.1, from the security self-audit of Milestone 2 (no critical, high or
+medium finding):
+
+- A profile 1 reader tries a failed passphrase once more with its words
+  lowercased and one space apart, and refuses costs above 256 MiB, 8 passes or
+  4 lanes (§ 7.1).
+- A one-word correction of profile 2 outside the words that hold `sk` alone
+  is applied only after the user checks that word on paper (§ 7.1).
+- After a recovery, the co-signer says whether each payment of the old account
+  goes to the new account (§ 7.2).

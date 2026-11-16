@@ -19,6 +19,15 @@ fn frost_zec(args: &[&str]) -> Child {
         .unwrap()
 }
 
+/// [`frost_zec`] with what it prints kept in `log`: what the user would read.
+fn frost_zec_logged(args: &[&str], log: &Path) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_frost-zec"))
+        .args(args)
+        .stdout(std::fs::File::create(log).unwrap())
+        .spawn()
+        .unwrap()
+}
+
 /// Waits for both processes, at most a minute, and requires success.
 fn wait(children: Vec<Child>) {
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -280,29 +289,59 @@ fn a_lost_coordinator_is_replaced_and_the_old_account_swept() {
     let pczt = pczt_io::serialize(build(&old_fvk, sweep)).unwrap();
     let (input, output) = (root.join("sweep.pczt"), root.join("swept.pczt"));
     std::fs::write(&input, pczt).unwrap();
-    wait(vec![
-        frost_zec(&[
-            "qr", "sign", "--as", "cosigner", "--state", &s, "--via", &via2, "--yes",
-        ]),
-        frost_zec(&[
-            "qr",
-            "sign",
-            "--as",
-            "coordinator",
-            "--state",
-            &c_old,
-            "--via",
-            &via2,
-            "--pczt",
-            input.to_str().unwrap(),
-            "--out",
-            output.to_str().unwrap(),
-        ]),
-    ]);
+    let sign_old = |input: &Path, output: &Path, log: &Path| {
+        wait(vec![
+            frost_zec_logged(
+                &[
+                    "qr", "sign", "--as", "cosigner", "--state", &s, "--via", &via2, "--yes",
+                ],
+                log,
+            ),
+            frost_zec(&[
+                "qr",
+                "sign",
+                "--as",
+                "coordinator",
+                "--state",
+                &c_old,
+                "--via",
+                &via2,
+                "--pczt",
+                input.to_str().unwrap(),
+                "--out",
+                output.to_str().unwrap(),
+            ]),
+        ]);
+        std::fs::read_to_string(log).unwrap()
+    };
+    let shown = sign_old(&input, &output, &root.join("sweep.log"));
     let signed = pczt_io::parse(&std::fs::read(&output).unwrap()).unwrap();
     assert!(
         pczt_io::spends_to_sign(&signed).is_err(),
         "the sweep is signed"
+    );
+    assert!(
+        shown.contains("every payment goes to the new account set up in the recovery")
+            && !shown.contains("WARNING: this account was recovered"),
+        "{shown}"
+    );
+
+    // A coordinator that sends the old funds elsewhere is flagged before the
+    // user approves.
+    let elsewhere = honest(&old_fvk, text_memo("not the sweep"));
+    let (input, output) = (
+        root.join("elsewhere.pczt"),
+        root.join("elsewhere-signed.pczt"),
+    );
+    std::fs::write(
+        &input,
+        pczt_io::serialize(build(&old_fvk, elsewhere)).unwrap(),
+    )
+    .unwrap();
+    let shown = sign_old(&input, &output, &root.join("elsewhere.log"));
+    assert!(
+        shown.contains("WARNING: this account was recovered") && shown.contains(&new_address),
+        "{shown}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

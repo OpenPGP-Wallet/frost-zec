@@ -841,12 +841,28 @@ fn backup_from_words(args: &[String]) -> Result<(), Box<dyn Error>> {
         (Ok(backup), _) => backup,
         (Err(error), None) => return Err(error),
         (Err(error), Some(ufvk)) => {
-            let corrections = profiles::correct_one_word(&words, ufvk)?;
+            let corrections = profiles::correct_one_word_at(&words, ufvk)?;
             match corrections.as_slice() {
                 [] => return Err(format!("{error}; no single word fixes it").into()),
+                // Only the viewing key can vouch for a correction: elsewhere
+                // the checksum alone fits it, and two miscopied words can make
+                // a wrong one fit. The user then checks that word on paper.
+                [one] if one.checked_by_viewing_key() => {
+                    println!(
+                        "word {} was miscopied; the corrected words restore the member",
+                        one.position + 1
+                    );
+                    profiles::from_words(&one.words)?
+                }
                 [one] => {
-                    println!("one word was miscopied; the corrected words restore the member");
-                    profiles::from_words(one)?
+                    return Err(format!(
+                        "{error}; changing word {} to \"{}\" would fit, but only the checksum \
+                         vouches for that word: check it against the paper, then run again with \
+                         the corrected words",
+                        one.position + 1,
+                        one.word
+                    )
+                    .into());
                 }
                 many => {
                     return Err(format!(

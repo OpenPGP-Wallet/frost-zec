@@ -28,8 +28,9 @@ All integers are little-endian. The key is Argon2id(passphrase, salt) with the
 header's parameters, 64 MiB, 3 passes and 1 lane by default. The whole header
 is the associated data, so a changed parameter or salt fails decryption. A
 reader refuses parameters below the defaults, so that a forged file cannot
-pass for a strong one, and above 1 GiB or 16 passes, so that it cannot exhaust
-the device. A text form, `zkfrost-file-1:` followed by the bytes in base64url,
+pass for a strong one, and above 256 MiB, 8 passes or 4 lanes, so that it
+cannot exhaust the device. A passphrase that fails as typed is tried once more
+with its words lowercased and one space apart. A text form, `zkfrost-file-1:` followed by the bytes in base64url,
 carries the same file for password managers.
 
 **Contents**, a CBOR map:

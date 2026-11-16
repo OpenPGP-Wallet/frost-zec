@@ -41,11 +41,12 @@ use frost_zec::setup::{
     self as dkg_setup, CoordinatorSetup, CosignerSetup, Done, Group, Round1, Round2,
 };
 use frost_zec::wire::{self, Message, kind};
-use frost_zec::{interop, keys, pczt_io, profiles, recovery, session, signing};
+use frost_zec::{check, interop, keys, pczt_io, profiles, recovery, session, signing};
 use rand10::rand_core::UnwrapErr;
 use rand10::rngs::SysRng;
 use reddsa::frost::redpallas::keys::{KeyPackage, PublicKeyPackage};
 use serde::{Deserialize, Serialize};
+use zcash_protocol::consensus::NetworkType;
 
 use super::{flag, option, print_report, qrview};
 
@@ -92,6 +93,10 @@ struct Seat {
     sk: String,
     ufvk: String,
     address: String,
+    /// Set on an old account's seat by a recovery: the new account its funds
+    /// are swept to. Signing then says whether each payment goes there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sweep_to: Option<String>,
 }
 
 impl Seat {
@@ -116,6 +121,7 @@ impl Seat {
             sk: hex::encode(group.sk),
             ufvk: group.ufvk.clone(),
             address: group.address.clone(),
+            sweep_to: None,
         })
     }
 
@@ -773,8 +779,10 @@ fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn
             }
             if let Some(Recovery::Cosigner { old_state, mut old }) = recovery {
                 // The old account now answers the new coordinator only: the
-                // lost device's pairing is forgotten.
+                // lost device's pairing is forgotten. Its funds go to the new
+                // account, which signing checks each payment against.
                 old.pairing = hex::encode(pairing.to_bytes());
+                old.sweep_to = Some(seat.address.clone());
                 old.replace(&old_state)?;
                 println!(
                     "  the old account ({}) now answers the new coordinator only: sign its \
@@ -788,6 +796,28 @@ fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn
     }
     println!("  Both devices now show this address. Compare them before funding it.");
     Ok(())
+}
+
+/// On an old account's seat after a recovery: whether every payment goes to
+/// the new account. A coordinator that sends the old funds anywhere else is
+/// flagged before the user approves.
+fn print_sweep_check(report: &check::Report, new_account: &str, network: NetworkType) {
+    let elsewhere: Vec<_> = report
+        .payments
+        .iter()
+        .filter(|payment| payment.address != new_account)
+        .collect();
+    if elsewhere.is_empty() && !report.payments.is_empty() {
+        println!("  every payment goes to the new account set up in the recovery");
+    }
+    for payment in elsewhere {
+        println!(
+            "  WARNING: this account was recovered, so its funds should only go to the new \
+             account ({new_account}), but this pays {} to {}",
+            check::amount(payment.zat, network),
+            payment.address
+        );
+    }
 }
 
 fn print_seat(seat: &Seat) {
@@ -850,6 +880,9 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
                 match cosigning::review(&member, &request) {
                     Ok(pending) => {
                         print_report("co-signer", pending.report());
+                        if let Some(new_account) = &seat.sweep_to {
+                            print_sweep_check(pending.report(), new_account, member.network);
+                        }
                         if ask("  Approve and sign?", flag(args, "--yes"))? {
                             pending.approve()
                         } else {
