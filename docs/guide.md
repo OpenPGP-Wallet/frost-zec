@@ -183,19 +183,33 @@ The wallet holds one FROST account per network. To run the guide again:
 The protocol never repairs an account: the two remaining members create a new
 one and move the funds to it (spec § 7.2). With the test co-signer:
 
-- **The wallet's computer is lost:** a new coordinator restores member 3 from
-  its backup and pairs with the co-signer, which describes the old account;
-  the new coordinator checks it against the backup before it goes on. Then the
-  old account's funds are swept to the new one, signed by member 3 and the
-  co-signer:
+- **The wallet's computer is lost:** on the new computer, OpenPGP Wallet
+  2.18.0 or later restores member 3 and pairs with the co-signer, which
+  describes the old account; the wallet checks it against the backup before it
+  goes on. Then the old account's funds are moved to the new one, signed by
+  member 3 and the co-signer:
+
+  1. In the FROST tab, click **Recover on testnet…** (or Mainnet), pick member
+     3's backup file (`member3-backup.zkfrost`) and type its passphrase.
+  2. On the co-signer, which keeps its old folder:
+
+     ```bash
+     frost-zec qr recover --as cosigner --state new-cosigner --old-state my-cosigner --via clipboard
+     ```
+
+     Compare the pairing codes as for a new account, then pass the messages
+     until the wallet shows the new address.
+  3. Once the old account's card is synced, click **Move everything to the new
+     account…**; the co-signer signs with its old folder:
+     `frost-zec qr sign --as cosigner --state my-cosigner --via clipboard`.
+  4. When the transfer is mined, remove the old account from its card.
+
+  Between two `frost-zec` processes, without the wallet:
 
   ```bash
   frost-zec qr recover --as cosigner --state new-cosigner --old-state my-cosigner --via clipboard
   frost-zec qr recover --as coordinator --network test --state new-wallet --old-state restored       --backup member3.zkfrost --via clipboard
   ```
-
-  The wallet's own screens for this come later; until then this is a test of
-  the protocol, between two `frost-zec` processes.
 - **The co-signer is lost:** the coordinator restores member 3 and signs the
   sweep with members 1 and 3 itself:
   `frost-zec qr sign-local --state my-wallet --backup member3.zkfrost --pczt sweep.pczt --out signed.pczt`.
