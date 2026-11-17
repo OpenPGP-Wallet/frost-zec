@@ -66,8 +66,10 @@ const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 /// What the co-signer shows before asking for approval, and the same facts for
 /// a program. `lines` and `warnings` are shown to the person who approves; the
 /// other fields carry the same facts for an automated signer, such as a
-/// spending policy, so it never has to parse text.
+/// spending policy, so it never has to parse text. More facts may be added:
+/// read the fields, never build a `Report`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Report {
     /// The transaction, line by line: spends, payments and their memos,
     /// change, fee, lock time.
@@ -90,6 +92,7 @@ pub struct Report {
 
 /// One payment leaving the group.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Payment {
     /// The receiver that is paid, encoded on its own as a unified address. It
     /// is not the address the PCZT names for display: that one is checked to
