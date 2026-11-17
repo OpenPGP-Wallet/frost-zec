@@ -1,9 +1,9 @@
 # FROST co-signing for shielded ZEC: QR protocol, signer checks and backups
 
-Draft v1.1, work in progress (ZCG grant #490: v0.1 was Milestone 1, v1.0 is
-Milestone 2, v1.1 adds the fixes of its security self-audit). The changes
-since v0.1 are listed in § 10. Not audited: use small
-test amounts only.
+Draft v1.2, work in progress (ZCG grant #490: v0.1 was Milestone 1, v1.0 is
+Milestone 2, v1.1 adds the fixes of its security self-audit, v1.2 requires a
+generated passphrase for the backup written at setup). The changes since v0.1
+are listed in § 10. Not audited: use small test amounts only.
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be read as in RFC 2119.
 
@@ -465,9 +465,20 @@ A writer MUST check, before writing, that the string restores against the
 viewing key, and a reader MUST check it after decrypting. The file never holds
 nonces or pairing keys: a restored member pairs anew (§ 3.3). Its text form,
 for password managers, is `zkfrost-file-1:` and the bytes in unpadded
-base64url. The passphrase SHOULD have at least 12 words; the reference wallet
-and the test co-signer generate 12 random words of the BIP-39 English list,
-lowercase and one space apart. When the passphrase as typed fails, a reader
+base64url.
+
+A writer that creates a profile 1 file at setup MUST encrypt it under a
+passphrase it generates itself from a cryptographically secure source, of at
+least 128 bits, and MUST NOT let the user replace it with one of their own.
+The file may cross other devices on its way to the backup media, a computer
+copying it to a USB drive for one, and a device that keeps a copy holds one
+share of the group behind that passphrase alone: only a generated passphrase
+resists offline guessing. The writer shows it once, on its own screen. The
+reference wallet and the test co-signer generate 12 random words of the BIP-39
+English list (132 bits), lowercase and one space apart. A reader accepts any
+passphrase, so every file written before this rule still opens.
+
+When the passphrase as typed fails, a reader
 SHOULD try it once more with its words lowercased and one space apart, so that
 a generated passphrase copied with a stray space, a line break or capitals
 still opens its file.
@@ -677,3 +688,9 @@ medium finding):
   is applied only after the user checks that word on paper (§ 7.1).
 - After a recovery, the co-signer says whether each payment of the old account
   goes to the new account (§ 7.2).
+
+v1.2, from Daniel Gorgonha's review of the white paper:
+
+- A profile 1 file written at setup is encrypted under a passphrase the writing
+  device generates, of at least 128 bits, which the user cannot replace;
+  readers still accept any passphrase (§ 7.1).

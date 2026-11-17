@@ -139,9 +139,32 @@ fn header(cost: Cost, salt: &[u8; SALT_LEN], nonce: &[u8; NONCE_LEN]) -> Vec<u8>
     header
 }
 
+/// Writes a profile 1 file at setup: encrypts `contents` under a passphrase
+/// this function generates ([`generate_passphrase`], 132 bits), and returns
+/// the file with the passphrase, to show the user once on this device.
+///
+/// A writer at setup MUST NOT take the passphrase from the user (spec § 7.1).
+/// The file may cross other devices on its way to the backup media, a
+/// computer copying it to a USB drive for one, and a device that keeps a copy
+/// holds one share of the group behind this passphrase alone: only a
+/// generated one resists offline guessing.
+pub fn protect(contents: &Contents) -> Result<(Vec<u8>, Zeroizing<String>), Box<dyn Error>> {
+    let passphrase = generate_passphrase();
+    let mut salt = [0u8; SALT_LEN];
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    let file = encrypt_with(contents, &passphrase, DEFAULT_COST, &salt, &nonce)?;
+    Ok((file, passphrase))
+}
+
 /// Encrypts `contents` under `passphrase`, with [`DEFAULT_COST`] and a fresh
 /// salt and nonce. The contents are checked first: a file that cannot be
 /// restored is never written.
+#[deprecated(
+    since = "0.2.1",
+    note = "a file written at setup must use a generated passphrase: use `protect` (spec § 7.1)"
+)]
 pub fn encrypt(contents: &Contents, passphrase: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut salt = [0u8; SALT_LEN];
     let mut nonce = [0u8; NONCE_LEN];
@@ -306,6 +329,9 @@ pub fn from_text(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 /// The fewest words a passphrase may have, unless the wallet's own strength
 /// check rates it very strong.
 pub const MIN_PASSPHRASE_WORDS: usize = 12;
+
+// Spec § 7.1: a generated passphrase carries at least 128 bits, 11 a word.
+const _: () = assert!(MIN_PASSPHRASE_WORDS * 11 >= 128);
 
 /// A passphrase of 12 random words from the BIP-39 English list: 132 bits.
 pub fn generate_passphrase() -> Zeroizing<String> {
@@ -497,6 +523,8 @@ pub fn ufvk_network(ufvk: &str) -> Result<zcash_protocol::consensus::NetworkType
 }
 
 #[cfg(test)]
+// The reader's tests encrypt under passphrases of their own on purpose.
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::{dkg, signing};
@@ -580,6 +608,29 @@ mod tests {
             assert!(refused.contains("work"), "{refused}");
         }
         assert!(file_cost(b"ZKFROSTA").is_err());
+    }
+
+    #[test]
+    fn a_setup_file_is_written_under_a_passphrase_generated_for_it() {
+        // Spec § 7.1: at least 128 bits, generated, never the user's own.
+        let (_, text, ufvk) = member();
+        let contents = Contents {
+            backup: Zeroizing::new(text),
+            ufvk,
+            birthday: None,
+            label: None,
+        };
+        let (file, passphrase) = protect(&contents).unwrap();
+        let list = wordlist();
+        let words: Vec<&str> = passphrase.split(' ').collect();
+        assert_eq!(words.len(), MIN_PASSPHRASE_WORDS);
+        assert!(words.iter().all(|w| list.contains(w)));
+        assert_eq!(
+            *decrypt(&file, &passphrase).unwrap().backup,
+            *contents.backup
+        );
+        let (_, other) = protect(&contents).unwrap();
+        assert_ne!(*passphrase, *other);
     }
 
     #[test]

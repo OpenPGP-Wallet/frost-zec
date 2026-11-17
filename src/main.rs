@@ -724,8 +724,8 @@ fn backup_protect(args: &[String]) -> Result<(), Box<dyn Error>> {
         birthday,
         label: option(args, "--label").map(String::from),
     };
-    let passphrase = profiles::generate_passphrase();
-    let file = profiles::encrypt(&contents, &passphrase)?;
+    // Generated, never taken from the user (spec § 7.1).
+    let (file, passphrase) = profiles::protect(&contents)?;
     if flag(args, "--text") {
         fs::write(
             out,

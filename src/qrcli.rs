@@ -2,7 +2,7 @@
 //! and a test coordinator.
 //!
 //!   qr setup --as coordinator|cosigner [--network main|test] [--state DIR] [--via DIR|qr|clipboard] [--yes]
-//!            [--backup-plain]   (co-signer: member 3 as a bare string, not an encrypted file)
+//!            [--backup-plain]   (co-signer, test networks only: member 3 as a bare string)
 //!   qr sign --as cosigner [--state DIR] [--via DIR|qr|clipboard] [--yes]
 //!   qr sign --as coordinator --pczt IN --out OUT [--state DIR] [--via DIR|qr|clipboard]
 //!   qr done [--state DIR] [--via DIR|qr|clipboard]
@@ -555,6 +555,9 @@ fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn
     };
     let network_name = network_name.as_str();
     let network = interop::network_type(network_name)?;
+    if flag(args, "--backup-plain") && network == NetworkType::Main {
+        return Err("--backup-plain writes member 3 unencrypted: test networks only".into());
+    }
     let state = state_dir(args);
     if state.join(SEAT_FILE).exists() {
         return Err(format!(
@@ -719,15 +722,15 @@ fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn
             let seat = Seat::new("cosigner", network_name, &pairing, &cosigner)?;
             seat.save(&state)?;
             // Member 3 is encrypted at once (profile 1, spec § 7.1) under a
-            // new passphrase, with the group's viewing key; --backup-plain
-            // writes the bare string instead, for tests.
+            // passphrase generated here, never one the user picks, with the
+            // group's viewing key; --backup-plain writes the bare string
+            // instead, on test networks only (checked before pairing).
             let plain = flag(args, "--backup-plain");
             let (backup_path, passphrase) = if plain {
                 let path = state.join("member3-backup.txt");
                 fs::write(&path, backup.backup_string()?)?;
                 (path, None)
             } else {
-                let passphrase = profiles::generate_passphrase();
                 let contents = profiles::Contents {
                     backup: zeroize::Zeroizing::new(backup.backup_string()?),
                     ufvk: cosigner.ufvk.clone(),
@@ -735,7 +738,8 @@ fn setup_flow(args: &[String], recovery: Option<Recovery>) -> Result<(), Box<dyn
                     label: Some("FROST 2-of-3, member 3".into()),
                 };
                 let path = state.join("member3-backup.zkfrost");
-                fs::write(&path, profiles::encrypt(&contents, &passphrase)?)?;
+                let (file, passphrase) = profiles::protect(&contents)?;
+                fs::write(&path, file)?;
                 (path, Some(passphrase))
             };
             // Member 3 leaves memory here; what was written is checked, not

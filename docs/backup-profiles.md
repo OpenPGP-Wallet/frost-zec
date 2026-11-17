@@ -44,9 +44,13 @@ carries the same file for password managers.
 
 Never nonces, and never pairing keys: a restored member pairs anew.
 
-**Passphrase.** At least 12 words, or one a strength estimator rates
-"very strong"; `backup protect` generates 12 random words of the BIP-39
-English list (132 bits) and shows them once.
+**Passphrase.** A file written at setup is encrypted under a passphrase the
+writing device generates, of at least 128 bits, never one the user picks
+(spec § 7.1): the file may cross a computer on its way to the backup media,
+and a copy kept there is one share of the group behind that passphrase alone.
+`backup protect` and the co-signer generate 12 random words of the BIP-39
+English list (132 bits) and show them once. A reader accepts any passphrase,
+so older files still open.
 
 ## Profile 2: a mnemonic
 
