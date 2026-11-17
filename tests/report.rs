@@ -56,13 +56,9 @@ fn named(pczt: Pczt, address: &str) -> Pczt {
 fn an_honest_payment_is_reported_as_facts() {
     let pczt = build(&group(), honest(&group(), text_memo("invoice 42")));
     let report = analyze(&pczt);
-    assert_eq!(
-        report.payments,
-        vec![check::Payment {
-            address: stranger_address(),
-            zat: PAYMENT,
-        }]
-    );
+    assert_eq!(report.payments.len(), 1);
+    assert_eq!(report.payments[0].address, stranger_address());
+    assert_eq!(report.payments[0].zat, PAYMENT);
     assert_eq!(report.spent_zat, SPEND);
     assert_eq!(report.change_zat, SPEND - PAYMENT - fee(2));
     assert_eq!(report.fee_zat, fee(2));
