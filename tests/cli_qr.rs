@@ -269,6 +269,8 @@ fn run(args: &[&str]) -> String {
 fn a_lost_coordinator_is_replaced_and_the_old_account_swept() {
     let root = std::env::temp_dir().join(format!("frost-zec-cli-recover-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
+    // The co-signer's output is logged under it before either process creates it.
+    std::fs::create_dir_all(&root).unwrap();
     let dir = |name: &str| root.join(name).to_str().unwrap().to_string();
     let (via, c, s) = (dir("via"), dir("coordinator"), dir("cosigner"));
 
@@ -287,44 +289,45 @@ fn a_lost_coordinator_is_replaced_and_the_old_account_swept() {
             &via,
             "--yes",
         ]),
-        frost_zec(&[
-            "qr",
-            "setup",
-            "--as",
-            "cosigner",
-            "--network",
-            "main",
-            "--state",
-            &s,
-            "--via",
-            &via,
-            "--yes",
-            "--backup-plain",
-        ]),
+        frost_zec_logged(
+            &[
+                "qr",
+                "setup",
+                "--as",
+                "cosigner",
+                "--network",
+                "main",
+                "--state",
+                &s,
+                "--via",
+                &via,
+                "--yes",
+            ],
+            &root.join("cosigner-setup.log"),
+        ),
     ]);
     let old_address = seat_field(Path::new(&c), "address");
     let old_ufvk = seat_field(Path::new(&s), "ufvk");
     let old_pairing = seat_field(Path::new(&s), "pairing");
 
-    // Member 3 kept as a profile 1 file, with the viewing key.
-    let out = run(&[
-        "backup",
-        "protect",
-        "--in",
-        &format!("{s}/member3-backup.txt"),
-        "--ufvk",
-        &old_ufvk,
-        "--out",
-        &dir("member3.zkfrost"),
-    ]);
-    let passphrase = out
+    // On Mainnet the co-signer writes member 3 as a profile 1 file under a
+    // passphrase it generates and shows once (spec § 7.1).
+    let log = std::fs::read_to_string(root.join("cosigner-setup.log")).unwrap();
+    let passphrase = log
         .lines()
-        .skip_while(|l| !l.starts_with("passphrase"))
-        .find(|l| l.starts_with("  "))
+        .skip_while(|l| !l.contains("shown only now"))
+        .skip(1)
+        .find(|l| !l.trim().is_empty())
         .unwrap()
         .trim()
         .to_string();
+    assert_eq!(passphrase.split(' ').count(), 12);
     std::fs::write(dir("passphrase.txt"), passphrase).unwrap();
+    std::fs::copy(
+        format!("{s}/member3-backup.zkfrost"),
+        dir("member3.zkfrost"),
+    )
+    .unwrap();
 
     // The coordinator is lost: a new one recovers with the co-signer.
     let (via2, c2, c_old, s2) = (
@@ -533,5 +536,52 @@ fn a_lost_cosigner_is_replaced_by_member_3_on_the_coordinator() {
         .unwrap();
     assert!(!refused.status.success());
     assert!(!root.join("never.pczt").exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `--backup-plain` writes member 3 unencrypted, so it is refused on Mainnet
+/// before any pairing starts (spec § 7.1: a setup file is encrypted under a
+/// generated passphrase).
+#[test]
+fn a_plain_backup_is_refused_on_mainnet() {
+    let root = std::env::temp_dir().join(format!("frost-zec-plain-main-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let state = root.join("cosigner");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_frost-zec"))
+        .args([
+            "qr",
+            "setup",
+            "--as",
+            "cosigner",
+            "--network",
+            "main",
+            "--backup-plain",
+            "--state",
+            state.to_str().unwrap(),
+            "--via",
+            root.join("exchange").to_str().unwrap(),
+            "--yes",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Refused before pairing: it ends at once instead of waiting for a peer.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("--backup-plain on Mainnet was not refused: the co-signer waited to pair");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut stderr).unwrap();
+    assert!(!status.success());
+    assert!(stderr.contains("test networks only"), "{stderr}");
+    assert!(!state.join("member3-backup.txt").exists());
     let _ = std::fs::remove_dir_all(&root);
 }

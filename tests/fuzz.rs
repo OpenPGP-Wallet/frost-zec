@@ -150,16 +150,14 @@ fn every_decoder_survives_mutated_input() {
             .unwrap()
             .encode()
             .unwrap();
-        profiles::encrypt(
-            &profiles::Contents {
-                backup: zeroize::Zeroizing::new(member),
-                ufvk: keys::ufvk(&fvk, NetworkType::Main).unwrap(),
-                birthday: None,
-                label: None,
-            },
-            "fuzz passphrase",
-        )
+        profiles::protect(&profiles::Contents {
+            backup: zeroize::Zeroizing::new(member),
+            ufvk: keys::ufvk(&fvk, NetworkType::Main).unwrap(),
+            birthday: None,
+            label: None,
+        })
         .unwrap()
+        .0
     };
     let backup_file_text = profiles::to_text(&backup_file);
     let request_bytes = request.to_bytes().unwrap();
