@@ -14,9 +14,11 @@
 //!   sign --pczt IN --out OUT [--signers 1,3]  check and sign a proven PCZT in one process
 //!   coordinate [--as 1 | --vault DIR] [--dir session] --pczt IN --out OUT
 //!                                             check the PCZT, then run the signing session
-//!   cosign [--as 2 | --vault DIR] [--dir session] [--yes]
+//!   cosign [--as 2 | --vault DIR] [--dir session] [--policy FILE] [--yes]
 //!                                             verify the PCZT on its own, then co-sign
-//!                                             (--yes skips the human check: tests only)
+//!                                             (--policy refuses what breaks its rules
+//!                                             before asking, docs/policy.md;
+//!                                             --yes skips the human check: tests only)
 //!   interop dkg [--network main|test] [--vault-id HEX] [--threshold 2] [--members 2]
 //!               [--dir exchange] [--out vault] [--force]
 //!                                             create a vault with members running other
@@ -44,7 +46,7 @@ mod qrcli;
 mod qrview;
 mod store;
 
-use frost_zec::{backup, check, dkg, interop, keys, pczt_io, profiles, session, signing};
+use frost_zec::{backup, check, dkg, interop, keys, pczt_io, policy, profiles, session, signing};
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -464,6 +466,10 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     seat.check_two_signers()?;
     let dir = PathBuf::from(option(args, "--dir").unwrap_or(SESSION_DIR));
     let my_id = seat.id();
+    // Loaded before the session opens, so a bad policy file stops here.
+    let policy = option(args, "--policy")
+        .map(|path| policy::Policy::load_for(path, seat.network))
+        .transpose()?;
 
     if session::reply_pending(&dir) {
         println!(
@@ -547,6 +553,13 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
         return refuse("the number of spends and commitments do not match".into());
     }
     print_report(&seat.name, &report);
+    // A standing policy only narrows: a payment it refuses is never offered
+    // to the user, one it allows is asked about as without a policy.
+    if let Some(policy) = &policy
+        && let Err(reason) = policy.check(&report, seat.network)
+    {
+        return refuse(reason);
+    }
 
     let approved = if flag(args, "--yes") {
         // Test mode: skips the human check. Never use it for real funds.

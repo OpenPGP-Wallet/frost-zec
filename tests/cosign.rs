@@ -199,6 +199,23 @@ fn declining_sends_no_commitment_and_no_share() {
     assert!(error.contains("declined"), "{error}");
 }
 
+/// An app (a standing policy, say) can refuse with its own reason instead of
+/// asking the user. No share leaves the device.
+#[test]
+fn refusing_with_a_reason_sends_no_share_and_tells_the_coordinator_why() {
+    let members = group();
+    let pczt = payment(&members);
+    let (coordinating, request, _) =
+        CoordinatorSession::request(&members[0], &pczt, &mut UnwrapErr(SysRng)).unwrap();
+    let reply = cosigning::review(&members[1], &request)
+        .ok()
+        .unwrap()
+        .refuse("policy: above the cap".into());
+    assert_eq!(refusal(reply.clone()), "policy: above the cap");
+    let error = coordinating.finish(&reply).unwrap_err().to_string();
+    assert!(error.contains("policy: above the cap"), "{error}");
+}
+
 #[test]
 fn the_coordinator_rejects_bad_or_foreign_replies() {
     let members = group();
