@@ -216,6 +216,34 @@ fn two_processes_pair_generate_keys_and_sign() {
     // Refused by the policy, not declined at a prompt nobody answered.
     let said = std::fs::read_to_string(&said).unwrap();
     assert!(said.contains("policy"), "{said}");
+
+    // A policy written for another network stops the co-signer as it loads,
+    // before it reads any request.
+    let testnet = root.join("testnet-policy.json");
+    std::fs::write(&testnet, r#"{"network": "test", "per_payment_cap_zat": 1}"#).unwrap();
+    let said = root.join("cosigner-stderr.txt");
+    let finished = outcomes(vec![
+        Command::new(env!("CARGO_BIN_EXE_frost-zec"))
+            .args([
+                "qr",
+                "sign",
+                "--as",
+                "cosigner",
+                "--state",
+                s,
+                "--via",
+                via,
+                "--policy",
+                testnet.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&said).unwrap())
+            .spawn()
+            .unwrap(),
+    ]);
+    assert_eq!(finished, vec![false], "the co-signer stops at load");
+    let said = std::fs::read_to_string(&said).unwrap();
+    assert!(said.contains("network"), "{said}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

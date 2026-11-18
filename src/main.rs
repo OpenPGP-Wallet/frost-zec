@@ -468,7 +468,7 @@ fn cosign(args: &[String]) -> Result<(), Box<dyn Error>> {
     let my_id = seat.id();
     // Loaded before the session opens, so a bad policy file stops here.
     let policy = option(args, "--policy")
-        .map(policy::Policy::load)
+        .map(|path| policy::Policy::load_for(path, seat.network))
         .transpose()?;
 
     if session::reply_pending(&dir) {

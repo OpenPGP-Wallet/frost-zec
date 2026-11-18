@@ -868,7 +868,7 @@ fn sign(args: &[String]) -> Result<(), Box<dyn Error>> {
         "cosigner" => {
             // Loaded before the session opens, so a bad policy file stops here.
             let policy = option(args, "--policy")
-                .map(policy::Policy::load)
+                .map(|path| policy::Policy::load_for(path, member.network))
                 .transpose()?;
             println!("[co-signer] signing session");
             let messages = carrier.receive(SIGN_REQUEST)?;

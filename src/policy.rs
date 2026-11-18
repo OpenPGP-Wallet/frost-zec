@@ -31,14 +31,16 @@ pub struct Policy {
     /// A name for the person reading the refusal; checked against nothing.
     #[serde(default)]
     name: Option<String>,
-    /// The largest single payment, in zatoshis.
+    /// The most one payment may move, in zatoshis: the sum of every output of
+    /// the transaction that leaves the group, since one signature approves
+    /// them all.
     #[serde(default)]
     per_payment_cap_zat: Option<u64>,
     /// The largest fee, in zatoshis.
     #[serde(default)]
     max_fee_zat: Option<u64>,
     /// When present, every payment must go to one of these. An entry matches
-    /// when one of its receivers is the paid receiver, of the same kind.
+    /// when its Orchard receiver is the paid one.
     #[serde(default)]
     allowed_recipients: Option<Vec<Recipient>>,
 }
@@ -50,8 +52,8 @@ pub struct Recipient {
     /// A name for the person reading the policy; checked against nothing.
     #[serde(default)]
     pub label: Option<String>,
-    /// A unified address on the policy's network. A payment matches when its
-    /// paid receiver is one of this address's receivers, of the same kind.
+    /// A unified address on the policy's network, with an Orchard receiver. A
+    /// payment matches when its paid receiver is that Orchard receiver.
     pub address: String,
 }
 
@@ -77,6 +79,24 @@ impl Policy {
         Self::from_json(&text).map_err(|e| format!("policy {}: {e}", path.display()).into())
     }
 
+    /// Reads a policy file for a group on `network`. A policy written for
+    /// another network would refuse every payment, so it is refused here,
+    /// like any other bad file.
+    pub fn load_for(path: impl AsRef<Path>, network: NetworkType) -> Result<Self, Box<dyn Error>> {
+        let path = path.as_ref();
+        let policy = Self::load(path)?;
+        if policy.network()? != network {
+            return Err(format!(
+                "policy {}: written for network {}, but this group is on {}",
+                path.display(),
+                policy.network,
+                network_name(network)
+            )
+            .into());
+        }
+        Ok(policy)
+    }
+
     /// Parses and checks a policy from its JSON text.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let policy: Policy = serde_json::from_str(text).map_err(|e| e.to_string())?;
@@ -88,7 +108,7 @@ impl Policy {
             return Err("the policy sets no rule".into());
         }
         for entry in policy.allowed_recipients.iter().flatten() {
-            let (entry_network, _) = receivers(&entry.address).ok_or_else(|| {
+            let (entry_network, entry_receivers) = receivers(&entry.address).ok_or_else(|| {
                 format!(
                     "allowed recipient {} is not a unified address",
                     short(&entry.address)
@@ -99,6 +119,17 @@ impl Policy {
                     "allowed recipient {} is for another network than the policy's {}",
                     short(&entry.address),
                     policy.network
+                ));
+            }
+            // Payments go to Orchard receivers only (Ironwood notes are sent
+            // to them), so an entry without one could never match.
+            if !entry_receivers
+                .iter()
+                .any(|r| matches!(r, Receiver::Orchard(_)))
+            {
+                return Err(format!(
+                    "allowed recipient {} has no Orchard receiver, so no payment can match it",
+                    short(&entry.address)
                 ));
             }
         }
@@ -139,16 +170,26 @@ impl Policy {
                 amount(max, network)
             ));
         }
-        for payment in &report.payments {
-            if let Some(cap) = self.per_payment_cap_zat
-                && payment.zat > cap
-            {
+        if let Some(cap) = self.per_payment_cap_zat {
+            // One signature approves every output, so the cap holds for their
+            // sum: outputs each under it cannot add up past it.
+            let paid = report
+                .payments
+                .iter()
+                .fold(0u64, |total, payment| total.saturating_add(payment.zat));
+            if paid > cap {
+                let outputs = match report.payments.len() {
+                    1 => String::new(),
+                    n => format!(" (in {n} outputs)"),
+                };
                 return Err(format!(
-                    "policy: a payment of {} is above the per-payment cap of {}",
-                    amount(payment.zat, network),
+                    "policy: a payment of {}{outputs} is above the per-payment cap of {}",
+                    amount(paid, network),
                     amount(cap, network)
                 ));
             }
+        }
+        for payment in &report.payments {
             if let Some(allowed) = &self.allowed_recipients {
                 let paid = receivers(&payment.address)
                     .map(|(_, paid)| paid)
@@ -166,6 +207,14 @@ impl Policy {
             }
         }
         Ok(())
+    }
+}
+
+fn network_name(network: NetworkType) -> &'static str {
+    match network {
+        NetworkType::Main => "main",
+        NetworkType::Test => "test",
+        NetworkType::Regtest => "regtest",
     }
 }
 

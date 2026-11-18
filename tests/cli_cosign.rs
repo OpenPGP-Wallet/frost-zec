@@ -1,7 +1,8 @@
 //! `coordinate` and `cosign --policy` as two separate processes, talking through
 //! the session folder: a standing policy the payment breaks makes the co-signer
 //! refuse without asking, and a policy file naming a rule the co-signer does not
-//! enforce stops `cosign` before a session starts.
+//! enforce, or written for another network, stops `cosign` before a session
+//! starts.
 
 mod common;
 
@@ -126,6 +127,27 @@ fn cosign_stops_on_a_policy_it_cannot_enforce() {
     let said = std::fs::read_to_string(&said).unwrap();
     assert!(said.contains("daily_budget_zat"), "{said}");
     // It stopped before a session began: no commitments were written.
+    assert!(!root.join("session").exists(), "no session folder");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cosign_stops_on_a_policy_for_another_network() {
+    let (root, _) = group("cli-cosign-net-policy");
+    std::fs::write(
+        root.join("policy.json"),
+        r#"{"network": "test", "per_payment_cap_zat": 1}"#,
+    )
+    .unwrap();
+    let said = root.join("cosigner-stderr.txt");
+    let finished = outcomes(vec![frost_zec(
+        &root,
+        &["cosign", "--as", "2", "--policy", "policy.json"],
+        Stdio::from(std::fs::File::create(&said).unwrap()),
+    )]);
+    assert_eq!(finished, vec![false]);
+    let said = std::fs::read_to_string(&said).unwrap();
+    assert!(said.contains("network"), "{said}");
     assert!(!root.join("session").exists(), "no session folder");
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -20,17 +20,17 @@ Without `--policy`, nothing changes.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `network` | yes | `main`, `test` or `regtest`. A policy for another network than the group's refuses everything. |
+| `network` | yes | `main`, `test` or `regtest`. A policy for another network than the group's stops `cosign` and `qr sign` when they load it. |
 | `name` | no | A name for you; not checked. |
-| `per_payment_cap_zat` | no | The largest single payment, in zatoshis. |
+| `per_payment_cap_zat` | no | The most one payment may move, in zatoshis. A payment is everything one transaction pays out of the group, summed over its outputs, since one signature approves them all. Change back to the group does not count. |
 | `max_fee_zat` | no | The largest fee, in zatoshis. The signer's own checks already bound the fee by ZIP 317; this can set it lower. |
-| `allowed_recipients` | no | When present, every payment must go to one of these addresses. `label` is optional. |
+| `allowed_recipients` | no | When present, every payment must go to one of these addresses. Each needs an Orchard receiver. `label` is optional. |
 
-At least one of the three rules must be set. A field the co-signer does not know, such as a daily budget, makes the file fail to load: a rule that is not enforced must not look as if it were. Addresses in the allow-list must be unified addresses for the policy's network.
+At least one of the three rules must be set. A field the co-signer does not know, such as a daily budget, makes the file fail to load: a rule that is not enforced must not look as if it were. Addresses in the allow-list must be unified addresses for the policy's network, each with an Orchard receiver: payments only ever go to an Orchard receiver (the one Ironwood notes are sent to), so an entry without one could never match.
 
 ## How a recipient is matched
 
-The co-signer pays one receiver, and it judges that receiver, never the address the PCZT names for display. An allow-list entry matches when one of its receivers is the paid receiver, of the same kind (an Ironwood receiver matches only an Ironwood receiver with the same bytes). So you can list a recipient's full address as their wallet gives it, and a payment to any address that does not hold that exact receiver is refused, even one that shares another of its receivers.
+The co-signer pays one receiver, and it judges that receiver, never the address the PCZT names for display. An allow-list entry matches when its Orchard receiver is the paid receiver, with the same bytes. A receiver of another kind never matches, even with the same bytes. So you can list a recipient's full address as their wallet gives it, and a payment to any address that does not hold that exact receiver is refused, even one that shares another of its receivers.
 
 ## What it does not do
 

@@ -94,14 +94,17 @@ fn a_recipient_off_the_list_is_refused() {
 }
 
 /// An entry passes a payment only through a receiver of the same kind: a
-/// Sapling receiver whose bytes equal the paid Ironwood receiver is someone
-/// else.
+/// Sapling receiver whose bytes equal the paid Orchard receiver is someone
+/// else, even in an entry that also holds an Orchard receiver.
 #[test]
 fn a_receiver_of_another_kind_with_the_same_bytes_does_not_match() {
     let paid = stranger()
         .address_at(0u32, Scope::External)
         .to_raw_address_bytes();
-    let look_alike = ua(vec![unified::Receiver::Sapling(paid)], NetworkType::Main);
+    let look_alike = ua(
+        vec![orchard(5), unified::Receiver::Sapling(paid)],
+        NetworkType::Main,
+    );
     let policy = policy(serde_json::json!({
         "network": "main",
         "allowed_recipients": [{ "address": look_alike }],
@@ -111,6 +114,69 @@ fn a_receiver_of_another_kind_with_the_same_bytes_does_not_match() {
         "{}",
         refusal(&policy)
     );
+}
+
+/// Payments go to Orchard receivers only (Ironwood notes are sent to them),
+/// so an entry without one could never match: the owner learns it at load.
+#[test]
+fn an_allow_list_entry_without_an_orchard_receiver_is_refused_when_loading() {
+    let sapling_only = ua(vec![unified::Receiver::Sapling([9; 43])], NetworkType::Main);
+    let error = Policy::from_json(
+        &serde_json::json!({ "network": "main", "allowed_recipients": [{ "address": sapling_only }] })
+            .to_string(),
+    )
+    .unwrap_err();
+    assert!(error.contains("Orchard"), "{error}");
+}
+
+/// The honest payment split in two outputs to the same receiver, each at the
+/// cap: one signature would move twice the cap.
+fn split_report() -> Report {
+    let mut tx = honest(&group(), text_memo("rent"));
+    tx.outputs.insert(
+        1,
+        Output {
+            to: stranger().address_at(0u32, Scope::External),
+            value: PAYMENT,
+            memo: text_memo("rent, part 2"),
+            ovk: Ovk::External,
+        },
+    );
+    tx.outputs[2].value = SPEND - 2 * PAYMENT - fee(3);
+    let pczt = build(&group(), tx);
+    check::analyze(&pczt, &group(), NetworkType::Main).unwrap()
+}
+
+/// The cap holds for the whole transaction, since one signature approves all
+/// of it: outputs each under the cap cannot add up past it.
+#[test]
+fn the_cap_holds_for_everything_one_transaction_pays() {
+    let report = split_report();
+    assert_eq!(report.payments.len(), 2, "two payments leave the group");
+    let at_each = policy(serde_json::json!({ "network": "main", "per_payment_cap_zat": PAYMENT }));
+    let reason = at_each
+        .check(&report, NetworkType::Main)
+        .expect_err("twice the cap in one transaction should be refused");
+    assert!(reason.contains("cap"), "{reason}");
+    let at_total =
+        policy(serde_json::json!({ "network": "main", "per_payment_cap_zat": 2 * PAYMENT }));
+    assert_eq!(at_total.check(&report, NetworkType::Main), Ok(()));
+}
+
+/// The co-signer knows its group's network when it loads the policy, so a
+/// policy for another network stops there like any other bad file.
+#[test]
+fn a_policy_for_another_network_is_refused_when_loading_for_a_group() {
+    let dir = std::env::temp_dir().join(format!("frost-zec-policy-net-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("policy.json");
+    std::fs::write(&file, r#"{"network": "test", "per_payment_cap_zat": 1}"#).unwrap();
+    let error = Policy::load_for(&file, NetworkType::Main)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("network"), "{error}");
+    assert!(Policy::load_for(&file, NetworkType::Test).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
