@@ -214,6 +214,17 @@ impl PendingApproval {
         }
     }
 
+    /// Message 2, refused for a reason of the app's own, such as a standing
+    /// policy the payment breaks. The commitments and shares are dropped
+    /// unsent.
+    pub fn refuse(self, reason: String) -> Reply {
+        Reply::Refused {
+            session: self.session,
+            member: self.member,
+            reason,
+        }
+    }
+
     /// Message 2, when the user declined. The commitments and shares are
     /// dropped unsent.
     pub fn decline(self) -> Reply {
