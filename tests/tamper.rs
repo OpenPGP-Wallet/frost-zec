@@ -193,6 +193,81 @@ fn zero_value_padding_is_refused() {
     }
 }
 
+/// Two payments whose sum and fee use up the spent note exactly.
+/// zcash_client_backend still adds a change output of value zero, so that the
+/// number of outputs does not reveal that the note closed exactly, and with
+/// `OvkPolicy::Sender` it encrypts that change with no outgoing key (#12).
+fn two_payments_closing_exactly(change_ovk: Ovk) -> Tx {
+    let mut tx = honest(&group(), text_memo("invoice 42"));
+    tx.outputs[1] = Output {
+        to: stranger().address_at(1u32, Scope::External),
+        value: SPEND - PAYMENT - fee(3),
+        memo: MemoBytes::empty(),
+        ovk: Ovk::External,
+    };
+    tx.outputs.push(zero_change(change_ovk));
+    tx
+}
+
+fn zero_change(ovk: Ovk) -> Output {
+    Output {
+        to: group().address_at(0u32, Scope::Internal),
+        value: 0,
+        memo: MemoBytes::empty(),
+        ovk,
+    }
+}
+
+/// The group reads such a change with its incoming viewing key, so it counts
+/// as an action the payments need, whichever outgoing key encrypted it.
+#[test]
+fn a_zero_value_change_when_the_payments_close_the_note_is_accepted() {
+    for (ovk, line) in [
+        (Ovk::Without, "change 0 ZEC back to this group"),
+        (Ovk::Internal, "send 0 ZEC to this group's own address"),
+    ] {
+        let report = analyze(&build(&group(), two_payments_closing_exactly(ovk))).unwrap();
+        let shown = report.lines.join("\n");
+        assert_eq!(report.payments.len(), 2, "{shown}");
+        assert!(shown.contains(line), "{shown}");
+        assert!(shown.contains("fee 0.00015000 ZEC"), "{shown}");
+    }
+}
+
+/// zcash_client_backend adds a zero-value change only in place of a change
+/// with value, never next to one: there, it is padding.
+#[test]
+fn a_zero_value_change_next_to_a_change_with_value_is_refused() {
+    let mut tx = honest(&group(), text_memo("invoice 42"));
+    tx.outputs[1].value = SPEND - PAYMENT - fee(3);
+    tx.outputs.push(zero_change(Ovk::Without));
+    let refused = analyze(&build(&group(), tx)).unwrap_err();
+    assert!(refused.contains("extra ones move no value"), "{refused}");
+}
+
+/// One zero-value change is what the wallet adds; a second one is padding.
+#[test]
+fn a_second_zero_value_change_is_refused() {
+    let mut tx = two_payments_closing_exactly(Ovk::Without);
+    tx.outputs[1].value = SPEND - PAYMENT - fee(4);
+    tx.outputs.push(zero_change(Ovk::Without));
+    let refused = analyze(&build(&group(), tx)).unwrap_err();
+    assert!(refused.contains("extra ones move no value"), "{refused}");
+}
+
+/// The zero-value change raises the fee bound by one action, and no more.
+#[test]
+fn a_fee_above_zip_317_with_a_zero_value_change_is_refused() {
+    let mut tx = two_payments_closing_exactly(Ovk::Without);
+    tx.fee = Some(fee(4));
+    tx.outputs[1].value = SPEND - PAYMENT - fee(4);
+    let refused = analyze(&build(&group(), tx)).unwrap_err();
+    assert!(
+        refused.contains("more than ZIP 317 asks for 3 actions"),
+        "{refused}"
+    );
+}
+
 /// A payment with no change leaves one slot to the builder's padding. A
 /// zero-value note to a stranger there, readable with the group's outgoing
 /// key, would land on chain with a memo the user never saw.

@@ -359,6 +359,10 @@ pub fn analyze_at(
     let mut actions = 0usize;
     let mut valued_spends = 0usize;
     let mut valued_outputs = 0usize;
+    // Outputs back to the group's change address: with value, and of value
+    // zero (checked to be the group's own notes).
+    let mut valued_changes = 0usize;
+    let mut zero_changes = 0usize;
 
     if *pczt.global().tx_version() == V6_TX_VERSION {
         warnings.push(pre_authorization(
@@ -440,8 +444,10 @@ pub fn analyze_at(
                 // padding cannot be read by anyone; one the coordinator added
                 // and encrypted to the group's outgoing key can, and it would
                 // land on chain with a recipient and memo nobody was shown. One
-                // encrypted without that key cannot be told from padding: the
-                // action count below leaves no room for more than the padding.
+                // encrypted without that key cannot be told from padding,
+                // unless the group can decrypt it as its own change: the action
+                // count below leaves no room for more than the padding and
+                // that change.
                 let recovered = action
                     .recover_output_with_ovk(&external_ovk, bundle_version)
                     .and_then(|found| match found {
@@ -450,17 +456,39 @@ pub fn analyze_at(
                     })
                     .map_err(|e| refuse(&format!("action {index}: note encryption"), &e))?;
                 if let Some((_, address, memo)) = recovered {
-                    if fvk.scope_for_address(&address).is_none() {
+                    let scope = fvk.scope_for_address(&address);
+                    if scope.is_none() {
                         return Err(TxError::Refused(format!(
                             "action {index}: a zero-value note to another address, with a memo \
                              the user would not be shown"
                         )));
+                    }
+                    if scope == Some(Scope::Internal) {
+                        zero_changes += 1;
                     }
                     lines.push(format!(
                         "send 0 {} to this group's own address",
                         unit(network)
                     ));
                     lines.push(format!("    {}", describe_memo(&memo)));
+                } else if let Some(recipient) = output
+                    .recipient()
+                    .filter(|r| fvk.scope_for_address(r) == Some(Scope::Internal))
+                {
+                    // zcash_client_backend's change when the payments and the
+                    // fee use up the spent notes exactly: value zero, and with
+                    // `OvkPolicy::Sender` no outgoing key. The group decrypts
+                    // it with its incoming viewing key, as its wallet will.
+                    let found = action
+                        .decrypt_output_with_ivk(&internal_ivk, bundle_version)
+                        .map_err(|e| refuse(&format!("action {index}: note encryption"), &e))?;
+                    if let Some((note, address, _)) = found
+                        && address == recipient
+                        && note.value().inner() == 0
+                    {
+                        zero_changes += 1;
+                        lines.push(format!("change 0 {} back to this group", unit(network)));
+                    }
                 }
             } else {
                 valued_outputs += 1;
@@ -510,6 +538,7 @@ pub fn analyze_at(
                 }
                 match scope {
                     Some(Scope::Internal) => {
+                        valued_changes += 1;
                         add(&mut change, output_value)?;
                         lines.push(format!(
                             "change {} back to this group",
@@ -570,7 +599,17 @@ pub fn analyze_at(
     // does not catch a coordinator that spends more notes than needed or
     // splits the change: the co-signer does not know which notes a payment
     // should spend.
-    let needed = valued_spends.max(valued_outputs).max(GRACE_ACTIONS);
+    //
+    // One zero-value output is needed too: when the payments and the fee use
+    // up the spent notes exactly, zcash_client_backend still adds a change
+    // output of value zero, so that the number of outputs does not tell
+    // (fees/common.rs in 0.25). It counts only once, only when the group
+    // decrypted it as its own change, and only in place of a change with
+    // value, never next to one.
+    let zero_change_slot = usize::from(zero_changes > 0 && valued_changes == 0);
+    let needed = valued_spends
+        .max(valued_outputs + zero_change_slot)
+        .max(GRACE_ACTIONS);
     if actions > needed {
         return Err(format!(
             "the transaction has {actions} actions where its payments need {needed}: the \
