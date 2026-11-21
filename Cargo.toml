@@ -1,6 +1,6 @@
 [package]
 name = "frost-zec"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "FROST threshold signing for shielded ZEC: DKG, ZIP 2005 group keys, re-randomized PCZT signing, co-signer checks and member backup strings"
