@@ -342,8 +342,12 @@ Outputs:
   chain with a memo the user was never shown; one to the group itself is shown
   with its memo (`hidden-output`). The builder's padding cannot be read by
   anyone and is not shown. A zero-value output encrypted without the group's
-  outgoing key cannot be told from padding; the action bound below leaves room
-  for one at most.
+  outgoing key cannot be told from padding, unless the group decrypts it with
+  its internal incoming viewing key as a note to its own change address: that
+  is the change zcash_client_backend adds when the payments and the fee use up
+  the spent notes exactly, encrypted with no outgoing key under
+  `OvkPolicy::Sender`, and it is shown as change of 0. The action bound below
+  leaves room for the padding and one such change at most.
 - For each payment the co-signer MUST show the full recipient address, the
   amount and the memo (`payment`). The memo comes from the decryption, with
   control characters and characters that reorder or hide text escaped (quotes
@@ -360,7 +364,12 @@ Fee and size:
 - The fee is what the group spends minus what its outputs carry. It MUST equal
   the bundle's signed value balance, and MUST NOT exceed ZIP 317's marginal fee
   (5,000 zatoshis) times the actions the payments need,
-  `max(2, spends with value, outputs with value)` (`fee`). The lower fee of
+  `max(2, spends with value, outputs with value + z)` (`fee`), where `z` is 1
+  when the transaction has a zero-value change the group decrypted as its own
+  and no change with value, and 0 otherwise. zcash_client_backend adds such a
+  change in place of a change with value, never next to one, so that the
+  number of outputs does not reveal that the spent notes closed exactly. The
+  lower fee of
   ZIP 2009 (1,000 per action from Mainnet height 3,590,000) passes. A fee below
   the rule only costs the sender, so it is not refused.
 - A transaction with more actions than the payments need MUST be refused:
