@@ -52,10 +52,11 @@ share about half the time.
 
 ## Restore
 
-Inputs: the string and the group's UFVK. Recompute `nk` and `rivk` from `sk` and `ak` under each
-known derivation (legacy and ZIP 2005): the one that matches the UFVK is the group's. If none
-matches, refuse the string (it belongs to another group). Then rebuild the key package from the
-identifier, the share, `t` and `ak`.
+Inputs: the string and the group's UFVK. Refuse a share that is not a canonical scalar, or is zero
+(its verifying share is the identity, which ZIP 312 does not allow). Recompute `nk` and `rivk` from
+`sk` and `ak` under each known derivation (legacy and ZIP 2005): the one that matches the UFVK is the
+group's. If none matches, refuse the string (it belongs to another group). Then rebuild the key
+package from the identifier, the share, `t` and `ak`.
 
 The UFVK check proves `sk`, not the share. A wrong share is caught at the first signing, when the
 signers' verifying shares, which travel with their commitments, are interpolated against `ak`. So the

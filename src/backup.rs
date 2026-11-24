@@ -190,6 +190,11 @@ pub fn restore(text: &str, ufvk: &str) -> Result<Restored, Box<dyn Error>> {
     }
     let signing_share = SigningShare::deserialize(&backup.share)
         .map_err(|_| "the backup string holds an invalid signing share")?;
+    // Zero is a canonical scalar, but no member's share: its verifying share
+    // is the identity, which ZIP 312 does not allow.
+    if backup.share == [0; 32] {
+        return Err("the backup string holds a signing share of zero".into());
+    }
     let (network, fvk) = keys::parse_ufvk(ufvk)?;
     let ak: [u8; 32] = fvk.to_bytes()[..32].try_into()?;
     let derivation = if keys::derive(&backup.sk, &ak)?.fvk == fvk {
