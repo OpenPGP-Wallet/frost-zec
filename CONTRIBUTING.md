@@ -37,6 +37,15 @@ check refusing a bad input, not only accepting a good one. Changes to the key
 derivation or the backup format must keep passing the vectors in
 `tests/fixtures/`.
 
+## Releases
+
+- Refresh `CHECKPOINTS` in `src/check.rs` with a recent block of each network
+  (height and header time). The co-signer bounds the current height from the
+  checkpoint and the clock, and an old checkpoint lets a transaction's expiry
+  lie further ahead than it should.
+- Bring the line counts of `docs/audit-scope.md` up to date when the files
+  in scope changed.
+
 ## Commits and pull requests
 
 - Keep commits focused, one logical change each, with a message that says what

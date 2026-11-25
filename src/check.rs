@@ -43,11 +43,15 @@ const GRACE_ACTIONS: usize = 2;
 /// this computer's clock, the co-signer bounds the current height from above.
 ///
 /// The target spacing is 25 seconds since NU7 (ZIP 218). Mainnet keeps to it
-/// (25.0 s on average from 2026-11-09 to 2026-11-12), so 20 s leaves room. Testnet
+/// (25.0 s on average from 2026-11-10 to 2026-11-25), so 20 s leaves room. Testnet
 /// runs faster (about 18 s on 2026-11-12), so it is counted at 10 s.
+///
+/// The bound loosens as a checkpoint ages: every day adds the blocks of a fifth
+/// of a day on Mainnet, and nearly half a day on testnet, to how far an expiry
+/// may lie. Refresh both at each release (CONTRIBUTING.md).
 const CHECKPOINTS: [(NetworkType, u32, u64, u64); 2] = [
-    // 2026-11-10 15:39:24 UTC
-    (NetworkType::Main, 3_558_933, 1_794_325_164, 20),
+    // 2026-11-25 06:40:57 UTC
+    (NetworkType::Main, 3_609_500, 1_795_588_857, 20),
     // 2026-11-12 16:49:09 UTC
     (NetworkType::Test, 4_612_900, 1_794_502_149, 10),
 ];
