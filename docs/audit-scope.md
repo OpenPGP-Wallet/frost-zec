@@ -79,34 +79,36 @@ unit tests included:
 | File | Lines | Role |
 |---|---|---|
 | `src/channel.rs` | 655 | Pairing (X-Wing, committed six-digit code), direction keys, sealing |
-| `src/wire.rs` | 679 | CBOR messages, UR reader and its limits |
+| `src/wire.rs` | 682 | CBOR messages, UR reader and its limits |
 | `src/setup.rs` | 866 | DKG over the pairing, `sk` by commit and reveal, the acknowledgement |
-| `src/cosigning.rs` | 459 | Signing session, co-signer review and approval |
-| `src/check.rs` | 829 | Signer checks on a PCZT, and what is shown |
+| `src/cosigning.rs` | 469 | Signing session, co-signer review and approval |
+| `src/check.rs` | 910 | Signer checks on a PCZT, and what is shown |
 | `src/signing.rs` | 123 | Re-randomized FROST shares, aggregation, verification |
 | `src/pczt_io.rs` | 145 | Sighash, spends to sign, signature insertion |
 | `src/keys.rs` | 246 | ZIP 2005 key derivation (`use_qsk`) |
 | `src/dkg.rs` | 84 | DKG wrapper over `reddsa` |
-| `src/backup.rs` | 587 | Member backup strings (zcash/zips#1432) |
+| `src/backup.rs` | 605 | Member backup strings (zcash/zips#1432) |
 | `src/recovery.rs` | 204 | Recovery: the old group's description, member 3 restored and checked, the sweep with two members |
-| `src/profiles.rs` | 510 | Backup profiles: passphrase-encrypted file (Argon2id, XChaCha20-Poly1305), 51 words |
+| `src/profiles.rs` | 693 | Backup profiles: passphrase-encrypted file (Argon2id, XChaCha20-Poly1305), 51 words |
+| `src/policy.rs` | 230 | Optional standing policy of an unattended co-signer: cap per transaction, fee cap, allow-list |
 
 The test co-signer, for its input handling only (invariant 5): `src/qrcli.rs`,
-`src/camera.rs`, `src/session.rs`, `src/qrview.rs` (about 1,180 lines).
+`src/camera.rs`, `src/session.rs`, `src/qrview.rs` (about 1,570 lines).
 
 **OpenPGP Wallet** (https://github.com/OpenPGP-Wallet/openpgp-wallet), `master`
 at the commit given with the audit request:
 
 | File | Lines | Role |
 |---|---|---|
-| `core/src/zcash_frost.rs` | 1,310 | FROST account: seat encryption, setup, PCZT creation, proving, broadcast |
-| `app/src-tauri/src/frost.rs` | 538 | Commands the web frontend calls, state between steps, native confirmations |
+| `core/src/zcash_frost.rs` | 2,400 | FROST account: seat encryption, setup, PCZT creation, proving, broadcast |
+| `app/src-tauri/src/frost.rs` | 763 | Commands the web frontend calls, state between steps, native confirmations |
 | `app/src/main.js`, FROST section | about 500 | Screens; how backend text and SVG are displayed |
 
-In total about 7,700 lines of protocol and wallet code and 1,180 lines of test
-co-signer input handling, plus about 2,570 lines of integration tests and the
+In total about 9,600 lines of protocol and wallet code and 1,570 lines of test
+co-signer input handling, plus about 3,500 lines of integration tests and the
 shared tamper cases of `vectors/tamper/`, which show the intended behaviour.
-(Counted on 2026-11-13; the audit request gives the counts at its commit.)
+(Counted on 2026-11-25, frost-zec 0.2.1 and OpenPGP Wallet 2.20.0; the audit
+request gives the counts at its commit.)
 
 ## 6. Out of scope
 
