@@ -10,7 +10,7 @@ wallet. The `frost-zec` command-line tool below is built on it. Contributions
 are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The QR protocol between a user's devices is specified in
-[docs/spec.md](docs/spec.md) (draft v1.2). OpenPGP Wallet's FROST tab uses it
+[docs/spec.md](docs/spec.md) (draft v1.3). OpenPGP Wallet's FROST tab uses it
 as the coordinator, with this tool as the test co-signer, and
 [docs/guide.md](docs/guide.md) walks through a complete spend.
 
@@ -94,7 +94,7 @@ from the session directory once read, and the other files when the session
 ends. `cosign --yes` skips the human approval and exists only for automated
 tests.
 
-## The QR protocol (spec draft v1.2)
+## The QR protocol (spec draft v1.3)
 
 [`docs/spec.md`](docs/spec.md) specifies how two devices of one user share a
 FROST 2-of-3 account: pairing with a six-digit code, key generation, the
@@ -227,16 +227,15 @@ over the QR protocol's messages, mined on 2026-11-10:
 
 Done since the first version: the library is on crates.io as
 [`frost-zec`](https://crates.io/crates/frost-zec); the specification is at
-v1.2 (two-message signing, the setup acknowledgement, the shared tamper
-cases, a generated passphrase for the backup written at setup);
+v1.3 (two-message signing, the setup acknowledgement, the shared tamper
+cases, a generated passphrase for the backup written at setup, the fee
+bounded by ZIP 2009's rate);
 and recovery after a lost device is in the protocol, in this tool (`qr
 recover`, `qr sign-local`, spec § 7.2) and in OpenPGP Wallet's screens since
 its version 2.18.0.
 
 Still to do:
 
-- Fees after ZIP 2009: ask for the lower marginal fee once the clock is past
-  its activation ([#18](https://github.com/OpenPGP-Wallet/frost-zec/issues/18)).
 - An independent security audit: [docs/audit-scope.md](docs/audit-scope.md)
   says what it would cover.
 - The member backup format as a ZIP, co-owned with aryaethn

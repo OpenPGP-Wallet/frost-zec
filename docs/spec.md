@@ -1,9 +1,10 @@
 # FROST co-signing for shielded ZEC: QR protocol, signer checks and backups
 
-Draft v1.2, work in progress (ZCG grant #490: v0.1 was Milestone 1, v1.0 is
+Draft v1.3, work in progress (ZCG grant #490: v0.1 was Milestone 1, v1.0 is
 Milestone 2, v1.1 adds the fixes of its security self-audit, v1.2 requires a
-generated passphrase for the backup written at setup). The changes since v0.1
-are listed in § 10. Not audited: use small test amounts only.
+generated passphrase for the backup written at setup, v1.3 bounds the fee by
+ZIP 2009's rate). The changes since v0.1 are listed in § 10. Not audited: use
+small test amounts only.
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be read as in RFC 2119.
 
@@ -363,15 +364,24 @@ Fee and size:
 
 - The fee is what the group spends minus what its outputs carry. It MUST equal
   the bundle's signed value balance, and MUST NOT exceed ZIP 317's marginal fee
-  (5,000 zatoshis) times the actions the payments need,
+  times the actions the payments need,
   `max(2, spends with value, outputs with value + z)` (`fee`), where `z` is 1
   when the transaction has a zero-value change the group decrypted as its own
   and no change with value, and 0 otherwise. zcash_client_backend adds such a
   change in place of a change with value, never next to one, so that the
-  number of outputs does not reveal that the spent notes closed exactly. The
-  lower fee of
-  ZIP 2009 (1,000 per action from Mainnet height 3,590,000) passes. A fee below
-  the rule only costs the sender, so it is not refused.
+  number of outputs does not reveal that the spent notes closed exactly. A fee
+  below the rule only costs the sender, so it is not refused.
+- The marginal fee is 1,000 zatoshis since ZIP 2009, and was 5,000 before. ZIP
+  2009 applies from height 3,590,000 on Mainnet and 4,465,026 on testnet, and
+  both chains are past it. A co-signer sees no chain, but a transaction it
+  signs can only be mined from now on: the lower fee is the bound, except for
+  a transaction that expires before that height, which can no longer be mined
+  and keeps the fee of its time. Until 1 February 2027, 00:00 UTC by the
+  device's clock, a fee up to the earlier rate MAY be accepted, with a warning,
+  for coordinators that are not updated yet; from then on it MUST be refused.
+  Paying the earlier fee loses little, but ZIP 2009 notes that a fee other than
+  everyone's tells which software made the transaction. On a network with no
+  such height, the earlier rate stays the bound.
 - A transaction with more actions than the payments need MUST be refused:
   zero-value actions beyond the builder's padding to two would let a raised fee
   pass for ZIP 317's fee of a bigger transaction (`padding`). A coordinator that
@@ -703,3 +713,9 @@ v1.2, from Daniel Gorgonha's review of the white paper:
 - A profile 1 file written at setup is encrypted under a passphrase the writing
   device generates, of at least 128 bits, which the user cannot replace;
   readers still accept any passphrase (§ 7.1).
+
+v1.3, also from that review (frost-zec#18):
+
+- The fee is bounded by ZIP 2009's marginal fee, 1,000 zatoshis for each action
+  the payments need. The earlier 5,000 is accepted with a warning until
+  1 February 2027, then refused (§ 6.1).
