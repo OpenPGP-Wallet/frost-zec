@@ -25,15 +25,33 @@ use zcash_protocol::constants::V6_TX_VERSION;
 use crate::keys;
 use crate::pczt_io::TxError;
 
-/// Above this fee the co-signer warns (ZIP 317 fees are normally 0.0001 to
-/// 0.0003 ZEC for a few actions).
+/// Above this fee the co-signer warns (since ZIP 2009, ZIP 317's fee is
+/// 0.00002 ZEC for two actions and 0.00001 for each one more).
 const HIGH_FEE: u64 = 100_000;
 
-/// ZIP 317's marginal fee per logical action, in zatoshis. ZIP 2009 (Proposed)
-/// lowers it to 1,000 from block 3,590,000 on Mainnet and 4,465,026 on testnet.
-/// The co-signer sees no chain, so it accepts any fee up to the old rate for
-/// the actions a payment needs: both rates pass around that height.
-const MAX_MARGINAL_FEE: u64 = 5_000;
+/// ZIP 317's marginal fee per logical action, in zatoshis, since ZIP 2009
+/// lowered it, and the fee it replaced.
+const MARGINAL_FEE: u64 = 1_000;
+const EARLIER_MARGINAL_FEE: u64 = 5_000;
+
+/// The height from which ZIP 2009's fee applies on each network (its
+/// `FEE_REDUCTION_HEIGHT`). Both chains are past it: the checkpoints below are
+/// later blocks. The co-signer sees no chain, but a transaction it signs can
+/// only be mined from now on, so the lower fee is the one that applies, unless
+/// the transaction expires before that height and can no longer be mined.
+/// Regtest has no such height: the earlier fee stays its bound.
+const FEE_REDUCTION_HEIGHTS: [(NetworkType, u32); 2] = [
+    (NetworkType::Main, 3_590_000),
+    (NetworkType::Test, 4_465_026),
+];
+
+/// 1 February 2027, 00:00 UTC. Until then a fee up to the earlier rate passes
+/// with a warning, for coordinators that are not updated: zcash_primitives'
+/// standard rule charged 5,000 at every height until librustzcash#3283, merged
+/// on 2026-11-26. From then on such a fee is refused. A clock set earlier only
+/// keeps the warning; it never moves funds.
+const EARLIER_FEE_REFUSED_FROM: u64 = 1_801_440_000;
+const EARLIER_FEE_REFUSED_ON: &str = "1 February 2027";
 
 /// ZIP 317's grace actions: a bundle is padded to at least two actions.
 const GRACE_ACTIONS: usize = 2;
@@ -295,6 +313,15 @@ fn pre_authorization(
         "v6 pre-authorization: this signature does not prove the spent notes exist on chain; \
          it authorizes these exact payments if they do, until block {expiry_height}{when}"
     ))
+}
+
+/// Whether ZIP 2009's fee applies to a transaction that expires at
+/// `expiry_height` (0: never): it can still be mined at or after the fee
+/// reduction height of its network.
+fn fee_is_reduced(expiry_height: u32, network: NetworkType) -> bool {
+    FEE_REDUCTION_HEIGHTS
+        .iter()
+        .any(|&(net, height)| net == network && (expiry_height == 0 || expiry_height >= height))
 }
 
 /// A rough duration, for the expiry warning.
@@ -621,14 +648,36 @@ pub fn analyze_at(
         )
         .into());
     }
-    let max_fee = MAX_MARGINAL_FEE * needed as u64;
+    // ZIP 2009 lowered the rate. For a transaction it applies to, a fee up to
+    // the earlier rate is still what a coordinator that was not updated pays:
+    // it passes with a warning until a set date, and is refused from then on.
+    let asked = MARGINAL_FEE * needed as u64;
+    let earlier = EARLIER_MARGINAL_FEE * needed as u64;
+    let reduced = fee_is_reduced(*pczt.global().expiry_height(), network);
+    let required = reduced && now >= EARLIER_FEE_REFUSED_FROM;
+    let max_fee = if required { asked } else { earlier };
     if fee > max_fee {
+        let since = if required {
+            " since ZIP 2009 lowered it: a coordinator that still charges the earlier rate \
+             needs an update"
+        } else {
+            ""
+        };
         return Err(format!(
-            "the fee ({}) is more than ZIP 317 asks for {needed} actions ({})",
+            "the fee ({}) is more than ZIP 317 asks for {needed} actions ({}){since}",
             amount(fee, network),
             amount(max_fee, network)
         )
         .into());
+    }
+    if reduced && fee > asked {
+        warnings.push(format!(
+            "the fee ({}) is more than ZIP 317 asks for {needed} actions since ZIP 2009 lowered \
+             it ({}): the coordinator may still charge the earlier rate and need an update. From \
+             {EARLIER_FEE_REFUSED_ON} this co-signer refuses such a fee",
+            amount(fee, network),
+            amount(asked, network)
+        ));
     }
     if fee > HIGH_FEE {
         warnings.push(format!("high fee: {}", amount(fee, network)));
@@ -945,6 +994,34 @@ mod tests {
         );
         // Regtest has no checkpoint: only "never expires" is refused there.
         assert!(pre_authorization(499_999_999, NetworkType::Regtest, now()).is_ok());
+    }
+
+    /// The fee rule counts on both chains being past ZIP 2009's fee reduction
+    /// height. The checkpoints are blocks of each chain: none may be earlier.
+    #[test]
+    fn the_checkpoints_are_past_the_fee_reduction() {
+        for (network, reduction) in FEE_REDUCTION_HEIGHTS {
+            let (_, checkpoint, ..) = CHECKPOINTS
+                .into_iter()
+                .find(|(net, ..)| *net == network)
+                .unwrap();
+            assert!(checkpoint >= reduction, "{network:?}");
+        }
+        // 1 February 2027 is 20,850 days after 1 January 1970.
+        assert_eq!(EARLIER_FEE_REFUSED_FROM, 20_850 * 86_400);
+    }
+
+    /// ZIP 2009's fee applies to a transaction that can still be mined at or
+    /// after the reduction height; regtest has none.
+    #[test]
+    fn the_lower_fee_applies_from_the_reduction_height() {
+        for (network, reduction) in FEE_REDUCTION_HEIGHTS {
+            assert!(!fee_is_reduced(reduction - 1, network));
+            assert!(fee_is_reduced(reduction, network));
+            assert!(fee_is_reduced(0, network));
+        }
+        assert!(!fee_is_reduced(0, NetworkType::Regtest));
+        assert!(!fee_is_reduced(499_999_999, NetworkType::Regtest));
     }
 
     #[test]

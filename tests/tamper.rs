@@ -160,15 +160,81 @@ fn a_fee_above_zip_317_is_refused() {
     assert!(refused.contains("more than ZIP 317"), "{refused}");
 }
 
-/// ZIP 2009 lowers the marginal fee to 1,000 zatoshis: a co-signer that sees
-/// no chain accepts both rates.
+/// A height after ZIP 2009's lower fee starts on Mainnet (3,590,000).
+const AFTER_ZIP_2009: u32 = 3_600_000;
+/// The time from which the co-signer refuses the earlier fee: 1 February 2027,
+/// 00:00 UTC.
+const EARLIER_FEE_REFUSED_FROM: u64 = 1_801_440_000;
+
+fn analyze_at(pczt: &Pczt, clock: u64) -> Result<check::Report, String> {
+    check::analyze_at(pczt, &group(), NetworkType::Main, clock).map_err(|e| e.to_string())
+}
+
+/// A payment that can be mined after ZIP 2009's fee starts, paying `fee`.
+fn after_zip_2009(fee: u64) -> Pczt {
+    let mut tx = honest(&group(), MemoBytes::empty());
+    tx.height = Some(AFTER_ZIP_2009);
+    tx.outputs[1].value = SPEND - PAYMENT - fee;
+    tx.fee = Some(fee);
+    build(&group(), tx)
+}
+
+fn fee_warnings(report: &check::Report) -> Vec<&String> {
+    report
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("ZIP 2009"))
+        .collect()
+}
+
+/// ZIP 2009 lowers the marginal fee to 1,000 zatoshis. Its fee passes without
+/// a word, before the earlier fee is refused and after.
 #[test]
 fn a_fee_at_the_zip_2009_rate_is_accepted() {
-    let mut tx = honest(&group(), MemoBytes::empty());
-    tx.outputs[1].value = SPEND - PAYMENT - 2_000;
-    tx.fee = Some(2_000);
-    let shown = analyze(&build(&group(), tx)).unwrap().lines.join("\n");
-    assert!(shown.contains("fee 0.00002000 ZEC"), "{shown}");
+    let pczt = after_zip_2009(2_000);
+    for clock in [EARLIER_FEE_REFUSED_FROM - 1, EARLIER_FEE_REFUSED_FROM] {
+        let report = analyze_at(&pczt, clock).unwrap();
+        let shown = report.lines.join("\n");
+        assert!(shown.contains("fee 0.00002000 ZEC"), "{shown}");
+        assert!(fee_warnings(&report).is_empty(), "{:?}", report.warnings);
+    }
+}
+
+/// A coordinator that was not updated still pays 5,000 zatoshis per action.
+/// The co-signer says so and names the day it stops accepting it. From that
+/// day it refuses, and one zatoshi above ZIP 2009's fee is too much.
+#[test]
+fn the_earlier_fee_is_warned_about_then_refused() {
+    let earlier = after_zip_2009(fee(2));
+    let report = analyze_at(&earlier, EARLIER_FEE_REFUSED_FROM - 1).unwrap();
+    let warned = fee_warnings(&report);
+    assert_eq!(warned.len(), 1, "{:?}", report.warnings);
+    assert!(
+        warned[0].contains("0.00002000 ZEC") && warned[0].contains("1 February 2027"),
+        "{}",
+        warned[0]
+    );
+    for pczt in [earlier, after_zip_2009(2_001)] {
+        let refused = analyze_at(&pczt, EARLIER_FEE_REFUSED_FROM).unwrap_err();
+        assert!(
+            refused.contains("more than ZIP 317") && refused.contains("since ZIP 2009"),
+            "{refused}"
+        );
+    }
+    // Above the earlier fee, the refusal does not wait for that day.
+    let above = after_zip_2009(fee(2) + 1);
+    let refused = analyze_at(&above, EARLIER_FEE_REFUSED_FROM - 1).unwrap_err();
+    assert!(refused.contains("more than ZIP 317"), "{refused}");
+}
+
+/// A transaction that expires before ZIP 2009's fee starts can no longer be
+/// mined: the fee of its time stays its bound, whatever the clock says.
+#[test]
+fn a_transaction_from_before_zip_2009_keeps_the_fee_of_its_time() {
+    let pczt = build(&group(), honest(&group(), MemoBytes::empty()));
+    assert!(*pczt.global().expiry_height() < 3_590_000);
+    let report = analyze_at(&pczt, EARLIER_FEE_REFUSED_FROM).unwrap();
+    assert!(fee_warnings(&report).is_empty(), "{:?}", report.warnings);
 }
 
 /// Zero-value outputs on top of a payment and its change, the fee they "cost"
